@@ -33,6 +33,7 @@ if(BUILD_TESTING)
     find_package(Threads REQUIRED)
     add_executable(mtprpcd_socket_test
         ${PROJECT_SOURCE_DIR}/tests/adb/mtprpcd_socket_test.cpp
+        ${PROJECT_SOURCE_DIR}/android/mtprpcd/service.cpp
     )
     target_include_directories(mtprpcd_socket_test
         PRIVATE ${PROJECT_SOURCE_DIR}/android

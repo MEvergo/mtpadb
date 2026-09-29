@@ -1,0 +1,11 @@
+cc_binary {
+    name: "mtprpcd",
+    srcs: [
+        "mtprpcd/main.cpp",
+        "mtprpcd/service.cpp",
+    ],
+    init_rc: ["init/mtprpcd.rc"],
+    static_libs: ["libmtprpc_protocol"],
+    shared_libs: ["libcutils", "libcrypto"],
+    cpp_std: "c++17",
+}

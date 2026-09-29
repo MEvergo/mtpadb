@@ -1,0 +1,5 @@
+service mtprpcd /system/bin/mtprpcd
+    class main
+    user root
+    group root
+    socket mtprpcd-adb stream 0600 root root
