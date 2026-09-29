@@ -1,5 +1,4 @@
 diff --git a/adb/Android.bp b/adb/Android.bp
-index dee48bf..d479a14 100644
 --- a/adb/Android.bp
 +++ b/adb/Android.bp
 @@ -470,14 +470,17 @@
@@ -62,14 +61,23 @@ index dee48bf..d479a14 100644
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
-@@ -683,4 +721,35 @@
+@@ -676,7 +714,8 @@
+     static_libs: [
+         "libadbd",
+         "libadbd_auth",
+         "libbase",
+         "libcrypto_utils",
+         "libusb",
++        "libmtpadbd_rpc_service",
+     ],
+@@ -683,4 +722,35 @@
      test_suites: ["device-tests", "mts"],
      require_root: true,
  }
  
-+// Opt-in only: requires a prepared image with the mtprpcd init service running.
-+// Provision /data/adb/mtpadb/device.id and /data/adb/mtpadb/device.key.
-+// Keep this test out of stock adbd_test and device-tests/mts suites.
++// Opt-in only: run on a prepared image with mtprpcd running and the
++// root-provisioned /data/adb/mtpadb/device.id and device.key present.
++// This target is intentionally outside the stock adbd_test suites.
 +cc_test {
 +    name: "mtpadbd_rpc_service_integration_test",
 +    defaults: ["adbd_defaults", "libadbd_binary_dependencies"],
@@ -80,7 +88,7 @@ index dee48bf..d479a14 100644
 +        "shell_service_protocol.cpp",
 +        ":mtpadbd_rpc_service_test_srcs",
 +    ],
-+    test_config: "adb_test.xml",
++    test_config: "mtpadbd_rpc_service_integration_test.xml",
 +    shared_libs: ["liblog"],
 +    static_libs: [
 +        "libadbd",
@@ -98,10 +106,46 @@ index dee48bf..d479a14 100644
 +    test_suites: ["mtpadb-integration-tests"],
 +    require_root: true,
 +}
+diff --git a/adb/mtpadbd_rpc_service_integration_test.xml b/adb/mtpadbd_rpc_service_integration_test.xml
+new file mode 100644
+--- /dev/null
++++ b/adb/mtpadbd_rpc_service_integration_test.xml
+@@ -0,0 +1,27 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++     Copyright (C) 2026 The mtpadb project
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++<configuration description="Opt-in mtpadbd RPC integration; requires a prepared image with mtprpcd running and /data/adb/mtpadb/device.id plus device.key provisioned.">
++    <target_preparer class="com.android.tradefed.targetprep.RootTargetPreparer" />
++    <target_preparer class="com.android.tradefed.targetprep.PushFilePreparer">
++        <option name="cleanup" value="true" />
++        <option name="push" value="mtpadbd_rpc_service_integration_test-&gt;/data/local/tmp/mtpadbd_rpc_service_integration_test" />
++    </target_preparer>
++    <test class="com.android.tradefed.testtype.GTest">
++        <option name="native-test-device-path" value="/data/local/tmp" />
++        <option name="module-name" value="mtpadbd_rpc_service_integration_test" />
++    </test>
++</configuration>
 diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 --- a/adb/daemon/main.cpp
 +++ b/adb/daemon/main.cpp
-@@ -59,6 +59,13 @@
+@@ -57,2 +57,3 @@
+ #include "socket_spec.h"
+ #include "transport.h"
++#include "services.h"
+@@ -59,6 +60,13 @@
  
  #include "mdns.h"
  
@@ -115,7 +159,7 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
  #if defined(__ANDROID__)
  static const char* root_seclabel = nullptr;
  
-@@ -160,11 +167,15 @@ static void drop_privileges(int server_port) {
+@@ -160,11 +168,15 @@ static void drop_privileges(int server_port) {
                  LOG(FATAL) << "Could not set SELinux context";
              }
          }
@@ -136,7 +180,7 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
          }
      }
  }
-@@ -233,13 +244,16 @@ int adbd_main(int server_port) {
+@@ -233,13 +245,16 @@ int adbd_main(int server_port) {
      drop_privileges(server_port);
  #endif
  
@@ -157,7 +201,7 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
          // Listen on USB.
          usb_init();
          is_usb = true;
-@@ -251,7 +265,9 @@ int adbd_main(int server_port) {
+@@ -251,7 +266,9 @@ int adbd_main(int server_port) {
      // on the default port.
      std::vector<std::string> addrs;
      std::string prop_addr = android::base::GetProperty("service.adb.listen_addrs", "");
@@ -168,7 +212,7 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
          std::string prop_port = android::base::GetProperty("service.adb.tcp.port", "");
          if (prop_port.empty()) {
              prop_port = android::base::GetProperty("persist.adb.tcp.port", "");
-@@ -294,6 +310,9 @@ int adbd_main(int server_port) {
+@@ -294,6 +311,9 @@ int main(int argc, char** argv) {
  }
  
  int main(int argc, char** argv) {
@@ -178,10 +222,20 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
  #if defined(__BIONIC__)
      // Set M_DECAY_TIME so that our allocations aren't immediately purged on free.
      mallopt(M_DECAY_TIME, 1);
+@@ -338,6 +358,9 @@ int main(int argc, char** argv) {
+     close_stdin();
+ 
+     adb_trace_init(argv);
+ 
+     D("Handling main()");
++#if defined(MTPADB_PROJECT_DAEMON)
++    set_mtpadbd_project_mode(true);
++#endif
+     return adbd_main(DEFAULT_ADB_PORT);
 diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 --- a/adb/daemon/services.cpp
 +++ b/adb/daemon/services.cpp
-@@ -50,6 +50,10 @@
+@@ -50,5 +50,9 @@
  #include "services.h"
  #include "socket_spec.h"
  #include "sysdeps.h"
@@ -191,15 +245,32 @@ diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 +#include "rpc_service.h"
 +#endif
 +
+@@ -55,6 +59,9 @@
  #include "daemon/file_sync_service.h"
-@@ -261,3 +265,10 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
+ #include "daemon/framebuffer_service.h"
+ #include "daemon/logging.h"
+ #include "daemon/restart_service.h"
+ #include "daemon/shell_service.h"
+ 
++static bool mtpadbd_project_mode = false;
++void set_mtpadbd_project_mode(bool enabled) { mtpadbd_project_mode = enabled; }
++
+@@ -261,4 +268,11 @@
+ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
      ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
  
 +#if defined(__ANDROID__)
 +    if (name.starts_with("mtpadb:")) {
-+        if (name != "mtpadb:rpc") return unique_fd{};
++        if (!mtpadbd_project_mode || name != "mtpadb:rpc") return unique_fd{};
 +        return unique_fd{mtpadb::mtpadbd::connect_mtprpcd_socket()};
 +    }
 +#endif
 +
  #if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)
+diff --git a/adb/services.h b/adb/services.h
+--- a/adb/services.h
++++ b/adb/services.h
+@@ -31,2 +31,3 @@
+ unique_fd create_service_thread(const char* service_name, std::function<void(unique_fd)> func);
++void set_mtpadbd_project_mode(bool enabled);
+ #endif  // SERVICES_H_

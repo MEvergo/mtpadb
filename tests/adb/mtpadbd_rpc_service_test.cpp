@@ -1,5 +1,6 @@
 #include "adb.h"
 #include "adb_unique_fd.h"
+#include "services.h"
 #include "transport.h"
 
 #include "mtprpc_protocol.h"
@@ -105,8 +106,18 @@ std::optional<Frame> read_frame(int fd) {
     return frame;
 }
 
-TEST(MtpadbdRpcServiceTest, DispatchesBidirectionalHelloThroughRunningMtprpcd) {
+class MtpadbdRpcServiceTest : public testing::Test {
+  protected:
+    void SetUp() override { set_mtpadbd_project_mode(false); }
+    void TearDown() override { set_mtpadbd_project_mode(false); }
+};
+
+TEST_F(MtpadbdRpcServiceTest, DispatchesBidirectionalHelloThroughRunningMtprpcd) {
     auto transport = make_transport<atransport>();
+    unique_fd stock_service = daemon_service_to_fd("mtpadb:rpc", &transport);
+    ASSERT_LT(stock_service.get(), 0) << "project RPC dispatch must be disabled by default";
+
+    set_mtpadbd_project_mode(true);
     unique_fd service = daemon_service_to_fd("mtpadb:rpc", &transport);
     ASSERT_GE(service.get(), 0)
             << "requires the Android mtprpcd init service and its provisioned identity";
@@ -134,7 +145,7 @@ TEST(MtpadbdRpcServiceTest, DispatchesBidirectionalHelloThroughRunningMtprpcd) {
     EXPECT_EQ(device_hello->payload.size(), 48U);
 }
 
-TEST(MtpadbdRpcServiceTest, KeepsUnrelatedStockDeviceServiceDispatch) {
+TEST_F(MtpadbdRpcServiceTest, KeepsUnrelatedStockDeviceServiceDispatch) {
     auto transport = make_transport<atransport>();
     unique_fd service = daemon_service_to_fd("dev:/dev/null", &transport);
     ASSERT_GE(service.get(), 0);
@@ -145,7 +156,7 @@ TEST(MtpadbdRpcServiceTest, KeepsUnrelatedStockDeviceServiceDispatch) {
     EXPECT_EQ(read(service.get(), &discarded, sizeof(discarded)), 0);
 }
 
-TEST(MtpadbdRpcServiceTest, RejectsMalformedAndUnknownMtpadbServiceNames) {
+TEST_F(MtpadbdRpcServiceTest, RejectsMalformedAndUnknownMtpadbServiceNames) {
     auto transport = make_transport<atransport>();
     constexpr std::array<const char*, 4> invalid_names{{
         "mtpadb:",
