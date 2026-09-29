@@ -1,0 +1,6 @@
+cc_library_static {
+    name: "libmtprpc_protocol",
+    srcs: ["src/mtprpc_protocol.cpp"],
+    export_include_dirs: ["include"],
+    cpp_std: "c++17",
+}
