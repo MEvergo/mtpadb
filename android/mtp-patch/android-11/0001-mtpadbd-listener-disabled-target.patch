@@ -61,7 +61,7 @@ diff --git a/adb/Android.bp b/adb/Android.bp
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
-@@ -676,11 +714,43 @@
+@@ -676,12 +714,45 @@
      static_libs: [
          "libadbd",
          "libadbd_auth",
@@ -105,6 +105,8 @@ diff --git a/adb/Android.bp b/adb/Android.bp
 +    test_suites: ["mtpadb-integration-tests"],
 +    require_root: true,
 +}
++
+ python_test_host {
 diff --git a/adb/mtpadbd_rpc_service_integration_test.xml b/adb/mtpadbd_rpc_service_integration_test.xml
 new file mode 100644
 --- /dev/null
@@ -233,7 +235,7 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 --- a/adb/daemon/services.cpp
 +++ b/adb/daemon/services.cpp
-@@ -50,11 +50,18 @@
+@@ -50,12 +50,19 @@
  #include "services.h"
  #include "socket_spec.h"
  #include "sysdeps.h"
@@ -252,6 +254,7 @@ diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 +static bool mtpadbd_project_mode = false;
 +void set_mtpadbd_project_mode(bool enabled) { mtpadbd_project_mode = enabled; }
 +
+ void reconnect_service(unique_fd fd, atransport* t) {
 @@ -261,4 +268,11 @@
  unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
      ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;

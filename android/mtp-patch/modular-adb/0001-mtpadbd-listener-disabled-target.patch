@@ -51,7 +51,6 @@ diff --git a/Android.bp b/Android.bp
      ],
      require_root: true,
  }
- 
 +// Opt-in only: run on a prepared image with mtprpcd running and the
 +// root-provisioned /data/adb/mtpadb/device.id and device.key present.
 +// This target is intentionally outside the stock adbd_test suites.
@@ -90,6 +89,7 @@ diff --git a/Android.bp b/Android.bp
 +    test_suites: ["mtpadb-integration-tests"],
 +    require_root: true,
 +}
+ 
 diff --git a/mtpadbd_rpc_service_integration_test.xml b/mtpadbd_rpc_service_integration_test.xml
 new file mode 100644
 --- /dev/null
@@ -128,7 +128,7 @@ diff --git a/daemon/main.cpp b/daemon/main.cpp
 @@ -57,8 +57,16 @@
  #include "daemon/jdwp_service.h"
 +#include "services.h"
-     #include "daemon/mdns.h"
+ #include "daemon/mdns.h"
  #include "daemon/transport_daemon.h"
  #include "daemon/watchdog.h"
  
@@ -142,7 +142,7 @@ diff --git a/daemon/main.cpp b/daemon/main.cpp
  #if defined(__ANDROID__)
  static const char* root_seclabel = nullptr;
  static const char* tim_seclabel = nullptr;
-@@ -253,13 +261,16 @@ int adbd_main() {
+@@ -254,12 +262,15 @@ int adbd_main() {
  #endif
  
 -    // adbd_auth_init will spawn a thread, so we need to defer it until after selinux transitions.
@@ -184,19 +184,19 @@ diff --git a/daemon/main.cpp b/daemon/main.cpp
      // Set M_DECAY_TIME so that our allocations aren't immediately purged on free.
      mallopt(M_DECAY_TIME, 1);
 @@ -365,6 +381,9 @@ int main(int argc, char** argv) {
-    close_stdin();
+     close_stdin();
  
-    adb_trace_init(argv);
+     adb_trace_init(argv);
  
-    D("Handling main()");
+     D("Handling main()");
 +#if defined(MTPADB_PROJECT_DAEMON)
 +    set_mtpadbd_project_mode(true);
 +#endif
-    return adbd_main();
+     return adbd_main();
 diff --git a/daemon/services.cpp b/daemon/services.cpp
 --- a/daemon/services.cpp
 +++ b/daemon/services.cpp
-@@ -52,12 +52,19 @@
+@@ -52,13 +52,20 @@
  #include "socket_spec.h"
  #include "sysdeps.h"
  #include "tradeinmode.h"
@@ -216,6 +216,7 @@ diff --git a/daemon/services.cpp b/daemon/services.cpp
 +static bool mtpadbd_project_mode = false;
 +void set_mtpadbd_project_mode(bool enabled) { mtpadbd_project_mode = enabled; }
 +
+ void reconnect_service(unique_fd fd, atransport* t) {
 @@ -276,8 +283,15 @@
  unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
      ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
