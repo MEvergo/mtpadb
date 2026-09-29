@@ -1,0 +1,123 @@
+diff --git a/adb/Android.bp b/adb/Android.bp
+index dee48bf..d479a14 100644
+--- a/adb/Android.bp
++++ b/adb/Android.bp
+@@ -596,6 +596,41 @@ cc_binary {
+     },
+ }
+ 
++// Separate MTPADB daemon. The entry mode disables boot transports, while the
++// AOSP daemon services and TLS libraries remain available to project control.
++cc_binary {
++    name: "mtpadbd",
++    defaults: ["adbd_defaults", "host_adbd_supported", "libadbd_binary_dependencies"],
++
++    srcs: [
++        "daemon/main.cpp",
++    ],
++
++    cflags: [
++        "-DMTPADB_PROJECT_DAEMON=1",
++        "-D_GNU_SOURCE",
++        "-Wno-deprecated-declarations",
++    ],
++
++    strip: {
++        keep_symbols: true,
++    },
++
++    static_libs: [
++        "libadbd",
++        "libadbd_services",
++        "libasyncio",
++        "libcap",
++        "libminijail",
++        "libssl",
++    ],
++
++    shared_libs: [
++        "libadb_protos",
++        "libadbd_auth",
++    ],
++}
++
+ phony {
+     // Interface between adbd in a module and the system.
+     name: "adbd_system_api",
+@@ -59,6 +59,13 @@
+ 
+ #include "mdns.h"
+ 
++// Only the dedicated mtpadbd target enables this mode before entering adbd_main().
++#if defined(MTPADB_PROJECT_DAEMON)
++static bool mtpadbd_mode = false;
++#else
++static constexpr bool mtpadbd_mode = false;
++#endif
++
+ #if defined(__ANDROID__)
+ static const char* root_seclabel = nullptr;
+ 
+@@ -160,11 +167,15 @@ static void drop_privileges(int server_port) {
+                 LOG(FATAL) << "Could not set SELinux context";
+             }
+         }
+-        std::string error;
+-        std::string local_name =
+-            android::base::StringPrintf("tcp:%d", server_port);
+-        if (install_listener(local_name, "*smartsocket*", nullptr, 0, nullptr, &error)) {
+-            LOG(FATAL) << "Could not install *smartsocket* listener: " << error;
++        if (mtpadbd_mode) {
++            D("ADB local port listener disabled for mtpadbd");
++        } else {
++            std::string error;
++            std::string local_name =
++                android::base::StringPrintf("tcp:%d", server_port);
++            if (install_listener(local_name, "*smartsocket*", nullptr, 0, nullptr, &error)) {
++                LOG(FATAL) << "Could not install *smartsocket* listener: " << error;
++            }
+         }
+     }
+ }
+@@ -233,13 +244,16 @@ int adbd_main(int server_port) {
+     drop_privileges(server_port);
+ #endif
+ 
+-    // adbd_auth_init will spawn a thread, so we need to defer it until after selinux transitions.
+-    adbd_auth_init();
+-
++    if (mtpadbd_mode) {
++        LOG(INFO) << "mtpadbd bypasses stock auth and TLS property observers";
++    } else {
++        // Initialize the auth thread only after SELinux transitions.
++        adbd_auth_init();
++    }
+     bool is_usb = false;
+ 
+ #if defined(__ANDROID__)
+-    if (access(USB_FFS_ADB_EP0, F_OK) == 0) {
++    if (!mtpadbd_mode && access(USB_FFS_ADB_EP0, F_OK) == 0) {
+         // Listen on USB.
+         usb_init();
+         is_usb = true;
+@@ -251,7 +265,9 @@ int adbd_main(int server_port) {
+     // on the default port.
+     std::vector<std::string> addrs;
+     std::string prop_addr = android::base::GetProperty("service.adb.listen_addrs", "");
+-    if (prop_addr.empty()) {
++    if (mtpadbd_mode) {
++        LOG(INFO) << "mtpadbd starts without USB, TCP, or mDNS transports";
++    } else if (prop_addr.empty()) {
+         std::string prop_port = android::base::GetProperty("service.adb.tcp.port", "");
+         if (prop_port.empty()) {
+             prop_port = android::base::GetProperty("persist.adb.tcp.port", "");
+@@ -294,6 +310,9 @@ int adbd_main(int server_port) {
+ }
+ 
+ int main(int argc, char** argv) {
++#if defined(MTPADB_PROJECT_DAEMON)
++    mtpadbd_mode = true;
++#endif
+ #if defined(__BIONIC__)
+     // Set M_DECAY_TIME so that our allocations aren't immediately purged on free.
+     mallopt(M_DECAY_TIME, 1);

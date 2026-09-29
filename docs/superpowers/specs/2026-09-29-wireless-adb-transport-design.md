@@ -1,12 +1,12 @@
 # 无线 ADB 与 MTPADB 扩展设计
 
-> 状态：架构已确认，等待用户审阅。  
+> 状态：设计已批准，实施计划已保存。  
 > 日期：2026-09-29
 > `mtpadbctl` 与 `mtpadb` 命令名是设计接口，当前仓库尚未实现。
 
 ## 决策摘要
 
-在 AOSP Android 11+ 上构建独立的 `mtpadbd`，复用 AOSP ADB 的现代无线配对、TLS transport、mDNS 与标准 ADB service 实现。stock ADB 与 MTPADB 私有 RPC 共用同一个 TLS ADB **连接端口**；配对端口仍按官方流程单独开放。项目不启动系统 `/system/bin/adbd`，也不新增独立 MTPADB TCP RPC listener。
+在 AOSP Android 11+ source-build target 上构建独立的 `mtpadbd`；Android 11 基线代码位于 `platform/system/core/adb`，模块化 AOSP 分支位于 `platform/packages/modules/adb`。复用目标分支的现代无线配对、TLS transport、mDNS 与标准 ADB service 实现。stock ADB 与 MTPADB 私有 RPC 共用同一个 TLS ADB **连接端口**；配对端口仍按官方流程单独开放。项目不启动系统 `/system/bin/adbd`，也不新增独立 MTPADB TCP RPC listener。
 
 MTPADB 私有功能通过 ADB `OPEN` service `mtpadb:rpc` 暴露。`mtpadbd` 将该 service 的双向字节流转交给 `mtprpcd` 的本地 Unix socket；`mtprpcd` 在 Android 侧实现项目定义的 MTPX PSK `AUTH`、AEAD、stream 与 backpressure。当前仓库尚无这些 Android 组件，它们属于本功能需新增的实现。真实 USB-MTP 通道保持不变。
 
@@ -43,13 +43,13 @@ MTPADB 私有功能通过 ADB `OPEN` service `mtpadb:rpc` 暴露。`mtpadbd` 将
 
 | 方案 | 兼容性与维护成本 | 决定 |
 |---|---|---|
-| 从 `platform/packages/modules/adb` 复用官方 pairing、TLS、mDNS、ADB transport/service 代码，构建独立 `mtpadbd` | 最大化 stock ADB 行为一致性；需跟踪 AOSP 分支依赖并保留 Apache-2.0 attribution | 采用 |
+| 从目标 AOSP branch 的 ADB 源码复用（Android 11 基线位于 `platform/system/core/adb`，模块化分支位于 `platform/packages/modules/adb`） | 最大化 stock ADB 行为一致性；需跟踪 AOSP 分支依赖并保留 Apache-2.0 attribution | 采用 |
 | 从零实现 ADB transport、pairing 与 TLS | 依赖少，但协议、安全和平台行为容易偏离官方实现 | 不采用 |
 | 把无线连接委托给系统 `adbd` | 代码量较小，但破坏独立 daemon 要求，并让 MTPADB 服务依赖系统 adbd | 不采用 |
 
 ## 组件与数据流
 
-`mtpadbd` 使用 AOSP ADB 组件处理 pairing/TLS、ADB packet transport、mDNS 和标准 service dispatch；它不依赖系统 adbd binary。`mtprpcd` 保持 MTPADB RPC 的认证、加密和 stream 管理边界，不直接创建网络 listener。
+`mtpadbd` 使用目标 AOSP branch 的 ADB 组件处理 pairing/TLS、ADB packet transport、mDNS 和标准 service dispatch；它不依赖系统 adbd binary。AOSP 通常由 framework `AdbDebuggingManager` 注册 pairing mDNS；本项目由 `mtpadbd` 通过 pinned branch 的 AOSP mDNS 实现注册与撤销 pairing service，不依赖 `AdbDebuggingManager`、Settings 或 framework pairing UI。`mtprpcd` 保持 MTPADB RPC 的认证、加密和 stream 管理边界，不直接创建网络 listener。
 
 ```text
 Android 本地 root shell
@@ -69,7 +69,7 @@ Host stock adb ── adb pair ── AOSP-compatible pairing/TLS
                └── mtpadb host client 选择 serial 并请求 mtpadb:rpc
 ```
 
-现代 ADB pairing port 与 TLS connection port 是两个不同端口，并按 AOSP 实现动态分配；`wireless status` 显示当前 endpoint。stock ADB services 与 `mtpadb:rpc` 共用 connection port 和同一套已配对 TLS trust；不存在额外的 MTPADB 网络端口。wireless mode 开启时，mDNS 发布官方 `_adb-tls-pairing._tcp` 与 `_adb-tls-connect._tcp` service。
+现代 ADB pairing port 与 TLS connection port 是两个不同端口，并按 AOSP 实现动态分配；`wireless status` 显示当前 endpoint。stock ADB services 与 `mtpadb:rpc` 共用 connection port 和同一套已配对 TLS trust；不存在额外的 MTPADB 网络端口。wireless mode 开启时，`mtpadbd` 注册官方 `_adb-tls-pairing._tcp` 与 `_adb-tls-connect._tcp` service。
 
 `mtpadb` host client 使用 stock ADB server smart-socket transport 选择设备（`host:transport:<serial>`），然后请求 `mtpadb:rpc` service。ADB server 管理 TLS 连接和 pairing state；service 建立后 host client 读写该 service 的 raw byte stream。该客户端不直接连接 Android 网络端口，也不实现一套新的 ADB TLS client。
 
@@ -85,7 +85,7 @@ Host stock adb ── adb pair ── AOSP-compatible pairing/TLS
 
 ## 启停与网络暴露
 
-`mtpadbd` 可由 Android init 管理，但默认不开放无线 listener。root-only `mtpadbctl` 通过本地 Unix control socket 显式启动、查询或停止 wireless mode：
+`mtpadbd` 的独立 entry mode 在进入 `adbd_main` 前启用，默认不启动 USB ADB、legacy TCP、mDNS 或任何 listener；它保留 AOSP privilege dropping 和标准 service dispatch。该模式跳过 stock `adbd_auth_init()`，因此不会启动 `persist.adb.tls_server.enable` observer 或 stock ADB auth context；后续仅 root-only project control socket 可初始化项目 trust context 并显式开启 pairing/TLS transports。普通 `/system/bin/adbd` 的行为保持不变。
 
 - `wireless pair-start`：绑定配置的 Wi-Fi address，打开临时 pairing listener，输出 pairing address、port 和一次性 pairing code；默认 pairing window 为 120 秒，成功配对后立即关闭 pairing listener。
 - pairing 完成后，TLS ADB connection listener 保持开启，直到 `wireless stop`。已配对的 client certificate 会保留到显式 `wireless revoke <peer-id>`。
@@ -142,7 +142,7 @@ Android init service、control socket 和 TLS/RPC data directory 使用专用 SE
 
 本仓库目前没有 Android source tree 或 Android device。因此源码集成可以在仓库内完成，但 Android Soong build、SELinux 验证、真实 Wi-Fi/mDNS 行为和 physical MTP 回归都必须在 AOSP Android 11+ target 上执行，不能由当前 Linux-only build 代替。
 
-AOSP `packages/modules/adb` 的 pairing/TLS/mDNS 内部 API 会随 Android branch 变化。实施时必须固定并记录目标 AOSP branch/commit，复用该分支的实现和测试；不能把当前 `main` 的私有 API 假定为所有 OEM branch 的稳定 ABI。root-module mode 需要另行针对 ROM 检查 ABI、init 和 SELinux 集成。
+ADB pairing/TLS 内部 API 会随 Android branch 变化。实施固定并记录目标 AOSP branch/commit：Android 11 基线使用 `platform/system/core/adb` 的 `android-11.0.0_r48`，模块化分支使用对应的 `platform/packages/modules/adb`。实现和测试必须针对实际目标源码；不能把当前 `main` 的私有 API 假定为所有 OEM branch 的稳定 ABI。root-module mode 需要另行针对 ROM 检查 ABI、init 和 SELinux 集成。
 
 ## 上游依据
 
@@ -150,6 +150,6 @@ AOSP `packages/modules/adb` 的 pairing/TLS/mDNS 内部 API 会随 Android branc
 
 - [Android Developers: ADB wireless debugging](https://developer.android.com/tools/adb)：`adb pair` 与 `adb connect` 的官方使用流程。
 - [AOSP: Architecture of ADB Wi-Fi](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/docs/dev/adb_wifi.md)：pairing 与 TLS connect service 的职责边界和 mDNS service。
-- [AOSP: pairing connection implementation](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/pairing_connection/pairing_connection.cpp)：官方 pairing/TLS 实现入口。
+- [AOSP Android 11: pairing connection implementation](https://android.googlesource.com/platform/system/core/+/refs/tags/android-11.0.0_r48/adb/pairing_connection/pairing_connection.cpp)：Android 11 基线的官方 pairing 实现。
 - [AOSP: ADB host client implementation](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/client/adb_client.cpp)：stock host ADB server 的 transport/service 请求路径。
 - [当前仓库架构说明](../../architecture.md)：原有 USB/MTP 与 ADB service 分层；本设计仅新增 ADB wireless ingress 和 `mtpadb:rpc` service，不替换真实 USB-MTP 数据路径。
