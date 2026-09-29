@@ -44,7 +44,7 @@ diff --git a/Android.bp b/Android.bp
              ],
          },
      },
-@@ -965,7 +986,46 @@
+@@ -965,7 +986,45 @@
      test_suites: [
          "general-tests",
          "mts-adbd",
@@ -125,10 +125,10 @@ new file mode 100644
 diff --git a/daemon/main.cpp b/daemon/main.cpp
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
-@@ -57,1 +57,2 @@
+@@ -57,8 +57,16 @@
  #include "daemon/jdwp_service.h"
 +#include "services.h"
-@@ -59,6 +60,13 @@
+     #include "daemon/mdns.h"
  #include "daemon/transport_daemon.h"
  #include "daemon/watchdog.h"
  
@@ -196,7 +196,7 @@ diff --git a/daemon/main.cpp b/daemon/main.cpp
 diff --git a/daemon/services.cpp b/daemon/services.cpp
 --- a/daemon/services.cpp
 +++ b/daemon/services.cpp
-@@ -52,5 +52,9 @@
+@@ -52,12 +52,19 @@
  #include "socket_spec.h"
  #include "sysdeps.h"
  #include "tradeinmode.h"
@@ -206,7 +206,6 @@ diff --git a/daemon/services.cpp b/daemon/services.cpp
 +#include "rpc_service.h"
 +#endif
 +
-@@ -57,7 +61,10 @@
  #include "daemon/file_sync_service.h"
  #include "daemon/framebuffer_service.h"
  #include "daemon/jdwp_service.h"

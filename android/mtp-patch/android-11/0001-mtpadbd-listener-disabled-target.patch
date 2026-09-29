@@ -61,7 +61,7 @@ diff --git a/adb/Android.bp b/adb/Android.bp
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
-@@ -676,7 +714,8 @@
+@@ -676,11 +714,43 @@
      static_libs: [
          "libadbd",
          "libadbd_auth",
@@ -70,7 +70,6 @@ diff --git a/adb/Android.bp b/adb/Android.bp
          "libusb",
 +        "libmtpadbd_rpc_service",
      ],
-@@ -683,4 +722,35 @@
      test_suites: ["device-tests", "mts"],
      require_root: true,
  }
@@ -141,11 +140,10 @@ new file mode 100644
 diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 --- a/adb/daemon/main.cpp
 +++ b/adb/daemon/main.cpp
-@@ -57,2 +57,3 @@
+@@ -57,8 +57,16 @@
  #include "socket_spec.h"
  #include "transport.h"
 +#include "services.h"
-@@ -59,6 +60,13 @@
  
  #include "mdns.h"
  
@@ -235,7 +233,7 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 --- a/adb/daemon/services.cpp
 +++ b/adb/daemon/services.cpp
-@@ -50,5 +50,9 @@
+@@ -50,11 +50,18 @@
  #include "services.h"
  #include "socket_spec.h"
  #include "sysdeps.h"
@@ -245,7 +243,6 @@ diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 +#include "rpc_service.h"
 +#endif
 +
-@@ -55,6 +59,9 @@
  #include "daemon/file_sync_service.h"
  #include "daemon/framebuffer_service.h"
  #include "daemon/logging.h"
