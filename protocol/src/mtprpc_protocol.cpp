@@ -67,26 +67,47 @@ void write_u64(std::uint8_t* bytes, std::uint64_t value) noexcept {
 
 }  // namespace
 
-std::vector<std::uint8_t> encode_frame(const Frame& frame) {
-    if (!is_valid_frame_type(frame.type)) {
+std::array<std::uint8_t, kFrameHeaderBytes> serialize_header(const FrameHeader& header) {
+    if (header.version != kProtocolVersion) {
+        throw std::invalid_argument("unsupported MTPX protocol version");
+    }
+    if (!is_valid_frame_type(header.type)) {
         throw std::invalid_argument("unknown MTPX frame type");
     }
-    if (frame.reserved != 0) {
+    if (header.reserved != 0) {
         throw std::invalid_argument("MTPX reserved field must be zero");
     }
-    if (frame.payload.size() > kMaxPayloadBytes) {
+    if (header.payload_length > kMaxPayloadBytes) {
         throw std::length_error("MTPX payload exceeds the configured maximum");
     }
 
-    std::vector<std::uint8_t> bytes(kFrameHeaderBytes + frame.payload.size());
+    std::array<std::uint8_t, kFrameHeaderBytes> bytes{};
     std::copy(kMagic.begin(), kMagic.end(), bytes.begin());
-    write_u16(bytes.data() + 4, kProtocolVersion);
-    write_u16(bytes.data() + 6, static_cast<std::uint16_t>(frame.type));
-    write_u32(bytes.data() + 8, frame.flags);
-    write_u32(bytes.data() + 12, frame.stream_id);
-    write_u64(bytes.data() + 16, frame.sequence);
-    write_u32(bytes.data() + 24, static_cast<std::uint32_t>(frame.payload.size()));
-    write_u32(bytes.data() + 28, frame.reserved);
+    write_u16(bytes.data() + 4, header.version);
+    write_u16(bytes.data() + 6, static_cast<std::uint16_t>(header.type));
+    write_u32(bytes.data() + 8, header.flags);
+    write_u32(bytes.data() + 12, header.stream_id);
+    write_u64(bytes.data() + 16, header.sequence);
+    write_u32(bytes.data() + 24, header.payload_length);
+    write_u32(bytes.data() + 28, header.reserved);
+    return bytes;
+}
+
+std::vector<std::uint8_t> encode_frame(const Frame& frame) {
+    if (frame.payload.size() > kMaxPayloadBytes) {
+        throw std::length_error("MTPX payload exceeds the configured maximum");
+    }
+    FrameHeader header{};
+    header.type = frame.type;
+    header.flags = frame.flags;
+    header.stream_id = frame.stream_id;
+    header.sequence = frame.sequence;
+    header.payload_length = static_cast<std::uint32_t>(frame.payload.size());
+    header.reserved = frame.reserved;
+    const auto serialized_header = serialize_header(header);
+
+    std::vector<std::uint8_t> bytes(kFrameHeaderBytes + frame.payload.size());
+    std::copy(serialized_header.begin(), serialized_header.end(), bytes.begin());
     std::copy(frame.payload.begin(), frame.payload.end(), bytes.begin() + kFrameHeaderBytes);
     return bytes;
 }

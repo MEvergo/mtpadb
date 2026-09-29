@@ -1,8 +1,15 @@
-add_library(mtprpc_protocol STATIC src/mtprpc_protocol.cpp)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
+add_library(mtprpc_protocol STATIC
+    src/mtprpc_protocol.cpp
+    src/mtprpc_crypto.cpp
+    src/mtprpc_session.cpp
+)
 target_include_directories(mtprpc_protocol
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_compile_features(mtprpc_protocol PUBLIC cxx_std_17)
+target_link_libraries(mtprpc_protocol PUBLIC OpenSSL::Crypto)
 
 if(BUILD_TESTING)
     add_executable(mtprpc_protocol_test

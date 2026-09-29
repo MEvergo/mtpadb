@@ -45,6 +45,7 @@ struct Frame {
     std::vector<std::uint8_t> payload;
 };
 
+std::array<std::uint8_t, kFrameHeaderBytes> serialize_header(const FrameHeader& header);
 std::vector<std::uint8_t> encode_frame(const Frame& frame);
 FrameHeader decode_header(const std::uint8_t* bytes, std::size_t size);
 
