@@ -269,6 +269,56 @@ void test_session_derivation_and_header_associated_data() {
             "device could not open a valid host-to-device session frame");
 }
 
+void test_device_to_host_uses_reverse_key_and_nonce_prefix() {
+    auto sessions = establish_test_sessions();
+    Session& host = sessions.first;
+    Session& device = sessions.second;
+    const Bytes plaintext = from_hex("a1b2c3d4e5");
+    const EncryptedFrame frame = device.seal(data_header(), plaintext);
+    require(frame.header.sequence == 0, "first device-to-host sequence was not zero");
+    require(frame.header.payload_length == plaintext.size() + 16,
+            "device-to-host payload length omitted the Poly1305 tag");
+
+    const Bytes psk(32, 0x42);
+    const Nonce32 host_nonce = fixed_bytes<32>(
+        "000102030405060708090a0b0c0d0e0f"
+        "101112131415161718191a1b1c1d1e1f");
+    const DeviceId device_id = fixed_bytes<16>("00112233445566778899aabbccddeeff");
+    const Nonce32 device_nonce = fixed_bytes<32>(
+        "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+        "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf");
+    Bytes salt;
+    append(salt, host_nonce);
+    append(salt, device_nonce);
+    Bytes info = bytes_from_string("MTPADB-RPC-v1");
+    append(info, device_id);
+    const Bytes key_material = crypto::hkdf_sha256(psk, salt, info, 64);
+    Key32 device_to_host_key{};
+    for (std::size_t i = 0; i < device_to_host_key.size(); ++i) {
+        device_to_host_key[i] = key_material[32 + i];
+    }
+
+    Nonce12 nonce{};
+    nonce[3] = 1;  // Device-to-host direction prefix, uint32_be(1).
+    Frame header_frame{};
+    header_frame.type = frame.header.type;
+    header_frame.flags = frame.header.flags;
+    header_frame.stream_id = frame.header.stream_id;
+    header_frame.sequence = frame.header.sequence;
+    header_frame.reserved = frame.header.reserved;
+    header_frame.payload.assign(frame.header.payload_length, 0);
+    const Bytes encoded_header_and_body = encode_frame(header_frame);
+    const Bytes serialized_header(encoded_header_and_body.begin(),
+                                  encoded_header_and_body.begin() + kFrameHeaderBytes);
+    const AeadCiphertext expected = crypto::chacha20_poly1305_encrypt(
+        device_to_host_key, nonce, serialized_header, plaintext);
+    require(frame.ciphertext == expected.ciphertext && frame.tag == expected.tag,
+            "session did not use the reverse HKDF key, nonce prefix, and header AAD");
+    const std::optional<Bytes> opened = host.open(frame);
+    require(opened.has_value() && *opened == plaintext,
+            "host could not open a valid device-to-host session frame");
+}
+
 void test_altered_header_ciphertext_and_tag_are_rejected() {
     const Bytes plaintext = from_hex("102030405060");
 
@@ -351,6 +401,7 @@ int main() {
     test_fixed_transcript_and_valid_deterministic_handshake();
     test_wrong_psk_is_rejected();
     test_session_derivation_and_header_associated_data();
+    test_device_to_host_uses_reverse_key_and_nonce_prefix();
     test_altered_header_ciphertext_and_tag_are_rejected();
     test_duplicate_and_rolled_back_sequences_are_rejected();
     test_host_to_device_frame_is_not_accepted_as_device_to_host();
