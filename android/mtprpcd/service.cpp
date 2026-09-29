@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <fcntl.h>
+#include <limits>
 #include <optional>
 #include <poll.h>
 #include <sys/socket.h>
@@ -54,60 +56,81 @@ private:
     int fd_;
 };
 
-bool wait_for(int fd, short events) noexcept {
+using Clock = std::chrono::steady_clock;
+using Deadline = Clock::time_point;
+
+bool wait_until(int fd, short events, Deadline deadline) noexcept {
     pollfd descriptor{fd, events, 0};
     for (;;) {
-        const int result = poll(&descriptor, 1, -1);
+        const auto now = Clock::now();
+        if (now >= deadline) return false;
+
+        const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - now);
+        const auto max_poll_timeout =
+            static_cast<std::chrono::milliseconds::rep>(std::numeric_limits<int>::max());
+        const int timeout = remaining.count() > max_poll_timeout
+                                ? std::numeric_limits<int>::max()
+                                : static_cast<int>(remaining.count());
+        const int result = poll(&descriptor, 1, timeout);
         if (result > 0) {
-            return (descriptor.revents & POLLNVAL) == 0 &&
+            return Clock::now() < deadline &&
+                   (descriptor.revents & POLLNVAL) == 0 &&
                    (descriptor.revents & events) != 0;
         }
-        if (result == 0) return false;
+        if (result == 0) continue;
         if (errno != EINTR) return false;
     }
 }
 
-bool receive_exact(int fd, std::uint8_t* bytes, std::size_t size) noexcept {
+bool receive_exact(int fd, std::uint8_t* bytes, std::size_t size,
+                   Deadline deadline) noexcept {
     std::size_t received = 0;
     while (received < size) {
+        if (Clock::now() >= deadline) return false;
         const ssize_t count = recv(fd, bytes + received, size - received, 0);
+        const int error = count < 0 ? errno : 0;
+        if (Clock::now() >= deadline) return false;
         if (count > 0) {
             received += static_cast<std::size_t>(count);
             continue;
         }
         if (count == 0) return false;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!wait_for(fd, POLLIN)) return false;
+        if (error == EINTR) continue;
+        if (error == EAGAIN || error == EWOULDBLOCK) {
+            if (!wait_until(fd, POLLIN, deadline)) return false;
             continue;
         }
         return false;
     }
-    return true;
+    return Clock::now() < deadline;
 }
 
-bool send_all(int fd, const std::uint8_t* bytes, std::size_t size) noexcept {
+bool send_all(int fd, const std::uint8_t* bytes, std::size_t size,
+              Deadline deadline) noexcept {
     std::size_t sent = 0;
     while (sent < size) {
+        if (Clock::now() >= deadline) return false;
         const ssize_t count = send(fd, bytes + sent, size - sent, MSG_NOSIGNAL);
+        const int error = count < 0 ? errno : 0;
+        if (Clock::now() >= deadline) return false;
         if (count > 0) {
             sent += static_cast<std::size_t>(count);
             continue;
         }
         if (count == 0) return false;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!wait_for(fd, POLLOUT)) return false;
+        if (error == EINTR) continue;
+        if (error == EAGAIN || error == EWOULDBLOCK) {
+            if (!wait_until(fd, POLLOUT, deadline)) return false;
             continue;
         }
         return false;
     }
-    return true;
+    return Clock::now() < deadline;
 }
 
-bool read_frame(int fd, Frame& frame) {
+bool read_frame(int fd, Frame& frame, Deadline deadline) {
     std::array<std::uint8_t, kFrameHeaderBytes> wire_header{};
-    if (!receive_exact(fd, wire_header.data(), wire_header.size())) return false;
+    if (!receive_exact(fd, wire_header.data(), wire_header.size(), deadline)) return false;
 
     const FrameHeader header = protocol::decode_header(wire_header.data(), wire_header.size());
     frame.type = header.type;
@@ -117,22 +140,22 @@ bool read_frame(int fd, Frame& frame) {
     frame.reserved = header.reserved;
     frame.payload.resize(header.payload_length);
     if (!frame.payload.empty() &&
-        !receive_exact(fd, frame.payload.data(), frame.payload.size())) {
+        !receive_exact(fd, frame.payload.data(), frame.payload.size(), deadline)) {
         return false;
     }
-    return true;
+    return Clock::now() < deadline;
 }
 
-bool send_plain_frame(int fd, const Frame& frame) {
+bool send_plain_frame(int fd, const Frame& frame, Deadline deadline) {
     const Bytes bytes = protocol::encode_frame(frame);
-    return send_all(fd, bytes.data(), bytes.size());
+    return send_all(fd, bytes.data(), bytes.size(), deadline);
 }
 
-bool send_plain_error(int fd) {
+bool send_plain_error(int fd, Deadline deadline) {
     Frame frame;
     frame.type = FrameType::ERROR;
     frame.payload = Bytes{kGenericError};
-    return send_plain_frame(fd, frame);
+    return send_plain_frame(fd, frame, deadline);
 }
 
 bool is_handshake_control(const Frame& frame, FrameType type) noexcept {
@@ -357,10 +380,10 @@ void serve_authenticated(int fd, Session session) {
     AuthenticatedConnection(fd, std::move(session)).run();
 }
 
-void serve(int fd, const crypto::DeviceId& device_id, const Bytes& psk) {
+void serve(int fd, const crypto::DeviceId& device_id, const Bytes& psk, Deadline deadline) {
     Frame hello_frame;
 
-    if (!read_frame(fd, hello_frame) ||
+    if (!read_frame(fd, hello_frame, deadline) ||
         !is_handshake_control(hello_frame, FrameType::HELLO) ||
         hello_frame.payload.size() != 34) {
         return;
@@ -381,13 +404,16 @@ void serve(int fd, const crypto::DeviceId& device_id, const Bytes& psk) {
                             device_hello.device_id.end());
     response.payload.insert(response.payload.end(), device_hello.nonce.begin(),
                             device_hello.nonce.end());
-    if (!send_plain_frame(fd, response)) return;
+    if (!send_plain_frame(fd, response, deadline)) return;
 
     Frame auth_frame;
-    if (!read_frame(fd, auth_frame) || !is_handshake_control(auth_frame, FrameType::AUTH)) return;
+    if (!read_frame(fd, auth_frame, deadline) ||
+        !is_handshake_control(auth_frame, FrameType::AUTH)) {
+        return;
+    }
     std::optional<Session> session = handshake.authenticate(host_hello, auth_frame.payload);
     if (!session) {
-        (void)send_plain_error(fd);
+        (void)send_plain_error(fd, deadline);
         return;
     }
     serve_authenticated(fd, std::move(*session));
@@ -396,11 +422,21 @@ void serve(int fd, const crypto::DeviceId& device_id, const Bytes& psk) {
 }  // namespace
 
 void serve_connection(int connected_fd, const crypto::DeviceId& device_id,
-                      const crypto::Bytes& psk) {
+                      const crypto::Bytes& psk,
+                      std::chrono::milliseconds handshake_timeout) {
     OwnedFd owned_fd(connected_fd);
-    if (connected_fd < 0) return;
+    if (connected_fd < 0 || handshake_timeout <= std::chrono::milliseconds::zero()) return;
+
+    const auto started = Clock::now();
+    const auto max_remaining =
+        std::chrono::duration_cast<std::chrono::milliseconds>(Deadline::max() - started);
+    const Deadline deadline = handshake_timeout >= max_remaining
+                                  ? Deadline::max()
+                                  : started + handshake_timeout;
+    if (!set_nonblocking(connected_fd)) return;
+
     try {
-        serve(connected_fd, device_id, psk);
+        serve(connected_fd, device_id, psk, deadline);
     } catch (...) {
         // The connection is intentionally closed without exposing protocol or secret details.
     }
