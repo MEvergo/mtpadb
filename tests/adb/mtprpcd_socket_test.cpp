@@ -86,6 +86,7 @@ IoResult write_all_until(int fd, const std::uint8_t* bytes, std::size_t size,
                          Deadline deadline) {
     std::size_t written = 0;
     while (written < size) {
+        if (Clock::now() >= deadline) return IoResult::kTimedOut;
         const ssize_t count = send(fd, bytes + written, size - written, MSG_NOSIGNAL);
         if (count > 0) {
             written += static_cast<std::size_t>(count);
@@ -155,6 +156,8 @@ FrameRead read_frame_until(int fd, Deadline deadline) {
     }
 
     const auto header = mtpadb::protocol::decode_header(wire_header.data(), wire_header.size());
+    require(header.payload_length <= kMaxPayloadBytes,
+            "service response declared an oversized frame payload");
     Bytes payload(header.payload_length);
     if (!payload.empty()) {
         received = 0;
@@ -277,6 +280,8 @@ Session authenticate(SocketService& service, const Bytes& host_psk) {
                 device_hello.device_id.begin());
     std::copy_n(device_frame.payload.begin() + device_hello.device_id.size(),
                 device_hello.nonce.size(), device_hello.nonce.begin());
+    require(device_hello.device_id == test_device_id(),
+            "device HELLO returned an unexpected device ID");
 
     Bytes auth = handshake.make_auth(device_hello);
     send_frame(service.fd(), Frame{FrameType::AUTH, 0, 0, 0, 0, std::move(auth)});
@@ -491,10 +496,11 @@ void test_replayed_request_has_no_second_data_response() {
     require_authenticated_rejection(service, session, device_sequence);
 }
 
-std::array<std::uint8_t, kFrameHeaderBytes> oversized_header() {
-    FrameHeader header{};
-    header.type = FrameType::PING;
-    auto bytes = mtpadb::protocol::serialize_header(header);
+std::array<std::uint8_t, kFrameHeaderBytes> oversized_header(Session& session) {
+    const Frame sealed_ping = encrypted_request(session, FrameType::PING, 0, {});
+    const auto wire = mtpadb::protocol::encode_frame(sealed_ping);
+    std::array<std::uint8_t, kFrameHeaderBytes> bytes{};
+    std::copy_n(wire.begin(), bytes.size(), bytes.begin());
     const std::uint32_t oversized = static_cast<std::uint32_t>(kMaxPayloadBytes + 1U);
     bytes[24] = static_cast<std::uint8_t>(oversized >> 24U);
     bytes[25] = static_cast<std::uint8_t>(oversized >> 16U);
@@ -507,7 +513,7 @@ void test_oversized_header_is_rejected_without_payload() {
     const Bytes psk = test_psk();
     SocketService service(psk);
     Session session = authenticate(service, psk);
-    const auto header = oversized_header();
+    const auto header = oversized_header(session);
     send_bytes(service.fd(), header.data(), header.size());
     require_authenticated_rejection(service, session, 0);
 }
