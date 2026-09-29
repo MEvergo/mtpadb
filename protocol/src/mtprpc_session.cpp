@@ -225,7 +225,15 @@ std::optional<Bytes> Session::open(const EncryptedFrame& frame) {
     return plaintext;
 }
 
-HostHandshake::HostHandshake(Bytes psk) : HostHandshake(std::move(psk), random_nonce()) {}
+HostHandshake::HostHandshake(Bytes psk) : psk_(std::move(psk)) {
+    validate_psk(psk_);
+    try {
+        host_nonce_ = random_nonce();
+    } catch (...) {
+        wipe(psk_);
+        throw;
+    }
+}
 
 HostHandshake::HostHandshake(Bytes psk, const Nonce32& host_nonce)
     : psk_(std::move(psk)), host_nonce_(host_nonce) {
@@ -271,7 +279,15 @@ Session HostHandshake::establish(const DeviceHello& device_hello) {
 }
 
 DeviceHandshake::DeviceHandshake(Bytes psk, const DeviceId& device_id)
-    : DeviceHandshake(std::move(psk), device_id, random_nonce()) {}
+    : psk_(std::move(psk)), device_id_(device_id) {
+    validate_psk(psk_);
+    try {
+        device_nonce_ = random_nonce();
+    } catch (...) {
+        wipe(psk_);
+        throw;
+    }
+}
 
 DeviceHandshake::DeviceHandshake(Bytes psk, const DeviceId& device_id,
                                  const Nonce32& device_nonce)
