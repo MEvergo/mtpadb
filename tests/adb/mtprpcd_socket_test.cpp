@@ -412,6 +412,59 @@ void test_handshake_ping_echo_and_chunked_roundtrip() {
             "CLOSE did not report success");
 }
 
+std::uint32_t open_echo_stream(SocketService& service, Session& session,
+                               std::uint64_t& device_sequence) {
+    send_frame(service.fd(), encrypted_request(session, FrameType::OPEN, 0,
+                                               Bytes{'e', 'c', 'h', 'o'}));
+    Frame response = require_frame(service.fd());
+    require(response.type == FrameType::STATUS, "OPEN did not return STATUS");
+    require(response.stream_id != 0, "OPEN did not allocate a nonzero stream");
+    require(response.sequence == device_sequence, "OPEN response sequence was not monotonic");
+    ++device_sequence;
+    require(open_response(session, response) == Bytes{kSuccess}, "OPEN did not report success");
+    return response.stream_id;
+}
+
+void close_echo_stream(SocketService& service, Session& session, std::uint32_t stream_id,
+                       std::uint64_t& device_sequence) {
+    send_frame(service.fd(), encrypted_request(session, FrameType::CLOSE, stream_id, {}));
+    require(receive_response(service, session, FrameType::STATUS, stream_id, device_sequence) ==
+                Bytes{kSuccess},
+            "CLOSE did not report success");
+}
+
+void test_stream_limit_and_slot_release() {
+    const Bytes psk = test_psk();
+    SocketService service(psk);
+    Session session = authenticate(service, psk);
+    std::uint64_t device_sequence = 0;
+    std::vector<std::uint32_t> streams;
+    streams.reserve(mtpadb::protocol::kMaxStreams);
+
+    for (std::size_t i = 0; i < mtpadb::protocol::kMaxStreams; ++i) {
+        const std::uint32_t stream_id = open_echo_stream(service, session, device_sequence);
+        require(std::find(streams.begin(), streams.end(), stream_id) == streams.end(),
+                "OPEN reused an ID belonging to an active stream");
+        streams.push_back(stream_id);
+    }
+
+    send_frame(service.fd(), encrypted_request(session, FrameType::OPEN, 0,
+                                               Bytes{'e', 'c', 'h', 'o'}));
+    require(receive_response(service, session, FrameType::ERROR, 0, device_sequence) ==
+                Bytes{kGenericError},
+            "17th OPEN did not return a generic control-stream ERROR");
+
+    close_echo_stream(service, session, streams.front(), device_sequence);
+    const std::uint32_t replacement = open_echo_stream(service, session, device_sequence);
+    require(std::find(streams.begin() + 1, streams.end(), replacement) == streams.end(),
+            "replacement OPEN reused an ID belonging to another active stream");
+
+    close_echo_stream(service, session, replacement, device_sequence);
+    for (std::size_t i = 1; i < streams.size(); ++i) {
+        close_echo_stream(service, session, streams[i], device_sequence);
+    }
+}
+
 void test_wrong_psk_is_rejected_generically() {
     const Bytes psk = test_psk();
     SocketService service(psk);
@@ -503,6 +556,7 @@ void test_stalled_reader_is_backpressured_by_session_queue_limit() {
 int main() {
     try {
         test_handshake_ping_echo_and_chunked_roundtrip();
+        test_stream_limit_and_slot_release();
         test_wrong_psk_is_rejected_generically();
         test_replayed_request_has_no_second_data_response();
         test_oversized_header_is_rejected_without_payload();
