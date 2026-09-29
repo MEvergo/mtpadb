@@ -44,6 +44,9 @@ index dee48bf..d479a14 100644
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
+diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
+--- a/adb/daemon/main.cpp
++++ b/adb/daemon/main.cpp
 @@ -59,6 +59,13 @@
  
  #include "mdns.h"

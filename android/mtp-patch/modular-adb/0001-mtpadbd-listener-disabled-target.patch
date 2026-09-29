@@ -28,6 +28,9 @@ index 2dcd0c8..58bfc3a 100644
  cc_binary {
      name: "adbd.recovery",
      defaults: [
+diff --git a/daemon/main.cpp b/daemon/main.cpp
+--- a/daemon/main.cpp
++++ b/daemon/main.cpp
 @@ -59,6 +59,13 @@
  #include "daemon/transport_daemon.h"
  #include "daemon/watchdog.h"
