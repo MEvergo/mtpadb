@@ -241,7 +241,7 @@ diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
  #include "sysdeps.h"
  #include "transport.h"
  
-+#if defined(__ANDROID__)
++#if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)
 +#include "rpc_service.h"
 +#endif
 +
@@ -259,7 +259,7 @@ diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
  unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
      ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
  
-+#if defined(__ANDROID__)
++#if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)
 +    if (name.starts_with("mtpadb:")) {
 +        if (!mtpadbd_project_mode || name != "mtpadb:rpc") return unique_fd{};
 +        return unique_fd{mtpadb::mtpadbd::connect_mtprpcd_socket()};
