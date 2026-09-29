@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <fcntl.h>
 #include <iostream>
+#include <optional>
 #include <poll.h>
 #include <stdexcept>
 #include <sys/socket.h>
@@ -38,6 +39,9 @@ using Deadline = Clock::time_point;
 
 constexpr auto kIoTimeout = std::chrono::seconds(10);
 constexpr auto kRejectTimeout = std::chrono::seconds(2);
+constexpr auto kHandshakeTestTimeout = std::chrono::milliseconds(175);
+constexpr auto kHandshakeDeadlineSlack = std::chrono::milliseconds(75);
+constexpr auto kPartialHelloInterval = std::chrono::milliseconds(40);
 constexpr std::uint8_t kGenericError = 0x01;
 constexpr std::uint8_t kSuccess = 0x00;
 
@@ -186,9 +190,10 @@ Frame require_frame(int fd, std::chrono::milliseconds timeout = kIoTimeout) {
 
 class SocketService {
 public:
-    explicit SocketService(const Bytes& psk, int service_send_buffer = 0,
-                           int client_receive_buffer = 0, int service_receive_buffer = 0,
-                           int client_send_buffer = 0)
+    explicit SocketService(
+        const Bytes& psk, int service_send_buffer = 0, int client_receive_buffer = 0,
+        int service_receive_buffer = 0, int client_send_buffer = 0,
+        std::optional<std::chrono::milliseconds> handshake_timeout = std::nullopt)
         : psk_(psk), device_id_(test_device_id()) {
         int sockets[2] = {-1, -1};
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
@@ -221,9 +226,13 @@ public:
             if (flags < 0 || fcntl(client_fd_, F_SETFL, flags | O_NONBLOCK) != 0) {
                 throw std::runtime_error("could not make test socket nonblocking");
             }
-            worker_ = std::thread([this, service_fd] {
+            worker_ = std::thread([this, service_fd, handshake_timeout] {
                 try {
-                    serve_connection(service_fd, device_id_, psk_);
+                    if (handshake_timeout) {
+                        serve_connection(service_fd, device_id_, psk_, *handshake_timeout);
+                    } else {
+                        serve_connection(service_fd, device_id_, psk_);
+                    }
                 } catch (...) {
                     shutdown(service_fd, SHUT_RDWR);
                     close(service_fd);
@@ -337,6 +346,55 @@ void expect_closed(SocketService& service,
                    std::chrono::milliseconds timeout = kRejectTimeout) {
     const FrameRead result = read_frame_until(service.fd(), Clock::now() + timeout);
     require(result.result == ReadResult::kClosed, "service did not close after rejection");
+}
+
+void expect_closed_by(SocketService& service, Deadline deadline) {
+    const FrameRead result = read_frame_until(service.fd(), deadline);
+    require(result.result == ReadResult::kClosed,
+            "unauthenticated connection exceeded its absolute handshake deadline");
+}
+
+void test_idle_peer_is_closed_by_handshake_deadline() {
+    const Bytes psk = test_psk();
+    const Deadline deadline =
+        Clock::now() + kHandshakeTestTimeout + kHandshakeDeadlineSlack;
+    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
+    expect_closed_by(service, deadline);
+}
+
+void test_partial_hello_progress_does_not_reset_handshake_deadline() {
+    const Bytes psk = test_psk();
+    const Deadline handshake_deadline = Clock::now() + kHandshakeTestTimeout;
+    const Deadline close_deadline = handshake_deadline + kHandshakeDeadlineSlack;
+    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
+
+    Frame hello;
+    hello.type = FrameType::HELLO;
+    hello.payload = Bytes(34, 0);
+    const Bytes wire = mtpadb::protocol::encode_frame(hello);
+    constexpr std::size_t kPartialPayloadBytes = 4;
+    send_bytes(service.fd(), wire.data(), kFrameHeaderBytes + 1);
+    for (std::size_t received = 1; received < kPartialPayloadBytes; ++received) {
+        std::this_thread::sleep_for(kPartialHelloInterval);
+        require(Clock::now() < handshake_deadline,
+                "test did not send partial HELLO progress before its deadline");
+        send_bytes(service.fd(), wire.data() + kFrameHeaderBytes + received, 1);
+    }
+
+    expect_closed_by(service, close_deadline);
+}
+
+void test_authenticated_session_survives_handshake_deadline() {
+    const Bytes psk = test_psk();
+    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
+    Session session = authenticate(service, psk);
+    std::this_thread::sleep_for(kHandshakeTestTimeout + std::chrono::milliseconds(25));
+
+    send_frame(service.fd(), encrypted_request(session, FrameType::PING, 0, {}));
+    std::uint64_t device_sequence = 0;
+    const Bytes pong = receive_response(service, session, FrameType::STATUS, 0, device_sequence);
+    require(pong == Bytes{'P', 'O', 'N', 'G'},
+            "authenticated session was terminated by the handshake deadline");
 }
 
 void require_plaintext_rejection(SocketService& service) {
@@ -566,6 +624,9 @@ int main() {
         test_wrong_psk_is_rejected_generically();
         test_replayed_request_has_no_second_data_response();
         test_oversized_header_is_rejected_without_payload();
+        test_idle_peer_is_closed_by_handshake_deadline();
+        test_partial_hello_progress_does_not_reset_handshake_deadline();
+        test_authenticated_session_survives_handshake_deadline();
         test_stalled_reader_is_backpressured_by_session_queue_limit();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
