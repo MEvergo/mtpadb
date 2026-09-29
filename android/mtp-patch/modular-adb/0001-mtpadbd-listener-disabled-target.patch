@@ -2,7 +2,12 @@ diff --git a/Android.bp b/Android.bp
 index 2dcd0c8..58bfc3a 100644
 --- a/Android.bp
 +++ b/Android.bp
-@@ -833,6 +833,25 @@ cc_binary {
+@@ -693,4 +693,5 @@
+             static_libs: [
+                 "android_trade_in_mode_flags_cc_lib",
++                "libmtpadbd_rpc_service",
+             ],
+@@ -833,6 +834,25 @@ cc_binary {
      },
  }
  
@@ -28,7 +33,7 @@ index 2dcd0c8..58bfc3a 100644
  cc_binary {
      name: "adbd.recovery",
      defaults: [
-@@ -907,6 +926,7 @@
+@@ -907,6 +927,7 @@
  ADBD_TEST_LIBS = [
      "libadbd",
      "libadbd_auth",
@@ -36,7 +41,7 @@ index 2dcd0c8..58bfc3a 100644
      "libusb",
 +    "libmtprpc_protocol",
  ]
-@@ -923,12 +943,13 @@ cc_test {
+@@ -923,12 +944,13 @@ cc_test {
      srcs: libadb_test_srcs + [
          "daemon/restart_service.cpp",
          "daemon/restart_service_test.cpp",
@@ -50,6 +55,18 @@ index 2dcd0c8..58bfc3a 100644
          "mdns_test.cpp",
 +        ":mtpadbd_rpc_service_test_srcs",
      ],
+@@ -938,10 +960,11 @@
+     target: {
+         android: {
+             srcs: [
+                 "daemon/property_monitor_test.cpp",
+             ],
+             static_libs: [
+                 "android_trade_in_mode_flags_cc_lib",
++                "libmtpadbd_rpc_service",
+             ],
+         },
+     },
 diff --git a/daemon/main.cpp b/daemon/main.cpp
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
@@ -109,3 +126,32 @@ diff --git a/daemon/main.cpp b/daemon/main.cpp
  #if defined(__BIONIC__)
      // Set M_DECAY_TIME so that our allocations aren't immediately purged on free.
      mallopt(M_DECAY_TIME, 1);
+diff --git a/daemon/services.cpp b/daemon/services.cpp
+--- a/daemon/services.cpp
++++ b/daemon/services.cpp
+@@ -52,6 +52,10 @@
+ #include "socket_spec.h"
+ #include "sysdeps.h"
+ #include "tradeinmode.h"
+ #include "transport.h"
+ 
++#if defined(__ANDROID__)
++#include "rpc_service.h"
++#endif
++
+ #include "daemon/file_sync_service.h"
+@@ -276,8 +276,15 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
+     ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
+ 
+     if (is_in_tradeinmode() && !allow_tradeinmode_command(name)) {
+         return unique_fd{};
+     }
+ 
++#if defined(__ANDROID__)
++    if (name.starts_with("mtpadb:")) {
++        if (name != "mtpadb:rpc") return unique_fd{};
++        return unique_fd{mtpadb::mtpadbd::connect_mtprpcd_socket()};
++    }
++#endif
++
+ #if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)

@@ -2,7 +2,25 @@ diff --git a/adb/Android.bp b/adb/Android.bp
 index dee48bf..d479a14 100644
 --- a/adb/Android.bp
 +++ b/adb/Android.bp
-@@ -596,6 +596,41 @@ cc_binary {
+@@ -470,13 +470,16 @@
+     target: {
+         android: {
+             srcs: [
+                 "daemon/abb_service.cpp",
+                 "daemon/framebuffer_service.cpp",
+                 "daemon/mdns.cpp",
+                 "daemon/restart_service.cpp",
+             ],
+             shared_libs: [
+                 "libmdnssd",
+                 "libselinux",
+             ],
++            static_libs: [
++                "libmtpadbd_rpc_service",
++            ],
+         },
+         recovery: {
+@@ -596,6 +599,41 @@ cc_binary {
      },
  }
  
@@ -44,7 +62,7 @@ index dee48bf..d479a14 100644
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
-@@ -661,8 +696,9 @@ cc_test {
+@@ -661,8 +699,9 @@ cc_test {
      srcs: libadb_test_srcs + [
          "daemon/services.cpp",
          "daemon/shell_service.cpp",
@@ -54,7 +72,7 @@ index dee48bf..d479a14 100644
          "mdns_test.cpp",
 +        ":mtpadbd_rpc_service_test_srcs",
      ],
-@@ -676,7 +712,8 @@ cc_test {
+@@ -676,7 +715,8 @@ cc_test {
      static_libs: [
          "libadbd",
          "libadbd_auth",
@@ -63,6 +81,13 @@ index dee48bf..d479a14 100644
          "libusb",
 +        "libmtprpc_protocol",
      ],
+@@ -683,1 +723,6 @@
+     test_suites: ["device-tests", "mts"],
++    target: {
++        android: {
++            static_libs: ["libmtpadbd_rpc_service"],
++        },
++    },
 diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 --- a/adb/daemon/main.cpp
 +++ b/adb/daemon/main.cpp
@@ -143,3 +168,28 @@ diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
  #if defined(__BIONIC__)
      // Set M_DECAY_TIME so that our allocations aren't immediately purged on free.
      mallopt(M_DECAY_TIME, 1);
+diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
+--- a/adb/daemon/services.cpp
++++ b/adb/daemon/services.cpp
+@@ -50,6 +50,10 @@
+ #include "services.h"
+ #include "socket_spec.h"
+ #include "sysdeps.h"
+ #include "transport.h"
+ 
++#if defined(__ANDROID__)
++#include "rpc_service.h"
++#endif
++
+ #include "daemon/file_sync_service.h"
+@@ -261,4 +265,11 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
+     ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
+ 
++#if defined(__ANDROID__)
++    if (name.starts_with("mtpadb:")) {
++        if (name != "mtpadb:rpc") return unique_fd{};
++        return unique_fd{mtpadb::mtpadbd::connect_mtprpcd_socket()};
++    }
++#endif
++
+ #if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)

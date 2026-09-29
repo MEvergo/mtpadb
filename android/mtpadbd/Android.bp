@@ -1,0 +1,14 @@
+cc_library_static {
+    name: "libmtpadbd_rpc_service",
+    srcs: ["rpc_service.cpp"],
+    export_include_dirs: ["."],
+    cpp_std: "c++17",
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+    ],
+    visibility: [
+        "//system/core/adb",
+        "//packages/modules/adb",
+    ],
+}

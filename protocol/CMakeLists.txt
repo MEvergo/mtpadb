@@ -43,6 +43,7 @@ if(BUILD_TESTING)
     add_test(NAME mtprpcd_socket_test COMMAND mtprpcd_socket_test)
     set_tests_properties(mtprpcd_socket_test PROPERTIES TIMEOUT 30)
     add_executable(mtpadbd_rpc_connector_test
+        ${PROJECT_SOURCE_DIR}/android/mtpadbd/rpc_service.cpp
         ${PROJECT_SOURCE_DIR}/tests/adb/mtpadbd_rpc_connector_test.cpp
     )
     target_include_directories(mtpadbd_rpc_connector_test
