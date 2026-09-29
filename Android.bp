@@ -1,0 +1,10 @@
+filegroup {
+    name: "mtpadbd_rpc_service_test_srcs",
+    srcs: [
+        "tests/adb/mtpadbd_rpc_service_test.cpp",
+    ],
+    visibility: [
+        "//system/core/adb",
+        "//packages/modules/adb",
+    ],
+}

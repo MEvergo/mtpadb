@@ -42,4 +42,14 @@ if(BUILD_TESTING)
     target_link_libraries(mtprpcd_socket_test PRIVATE mtprpc_protocol Threads::Threads)
     add_test(NAME mtprpcd_socket_test COMMAND mtprpcd_socket_test)
     set_tests_properties(mtprpcd_socket_test PROPERTIES TIMEOUT 30)
+    add_executable(mtpadbd_rpc_connector_test
+        ${PROJECT_SOURCE_DIR}/tests/adb/mtpadbd_rpc_connector_test.cpp
+    )
+    target_include_directories(mtpadbd_rpc_connector_test
+        PRIVATE ${PROJECT_SOURCE_DIR}/android
+    )
+    target_compile_features(mtpadbd_rpc_connector_test PRIVATE cxx_std_17)
+    target_link_libraries(mtpadbd_rpc_connector_test PRIVATE Threads::Threads)
+    add_test(NAME mtpadbd_rpc_connector_test COMMAND mtpadbd_rpc_connector_test)
+    set_tests_properties(mtpadbd_rpc_connector_test PROPERTIES TIMEOUT 15)
 endif()

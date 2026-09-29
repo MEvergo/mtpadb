@@ -44,6 +44,25 @@ index dee48bf..d479a14 100644
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
+@@ -661,8 +696,9 @@ cc_test {
+     srcs: libadb_test_srcs + [
+         "daemon/services.cpp",
+         "daemon/shell_service.cpp",
+         "daemon/shell_service_test.cpp",
+         "shell_service_protocol.cpp",
+         "shell_service_protocol_test.cpp",
+         "mdns_test.cpp",
++        ":mtpadbd_rpc_service_test_srcs",
+     ],
+@@ -676,7 +712,8 @@ cc_test {
+     static_libs: [
+         "libadbd",
+         "libadbd_auth",
+         "libbase",
+         "libcrypto_utils",
+         "libusb",
++        "libmtprpc_protocol",
+     ],
 diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 --- a/adb/daemon/main.cpp
 +++ b/adb/daemon/main.cpp
