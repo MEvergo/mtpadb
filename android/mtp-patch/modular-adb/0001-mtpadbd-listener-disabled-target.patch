@@ -2,7 +2,7 @@ diff --git a/Android.bp b/Android.bp
 index 2dcd0c8..58bfc3a 100644
 --- a/Android.bp
 +++ b/Android.bp
-@@ -693,4 +693,5 @@
+@@ -693,3 +693,4 @@
              static_libs: [
                  "android_trade_in_mode_flags_cc_lib",
 +                "libmtpadbd_rpc_service",
@@ -33,40 +33,52 @@ index 2dcd0c8..58bfc3a 100644
  cc_binary {
      name: "adbd.recovery",
      defaults: [
-@@ -907,6 +927,7 @@
- ADBD_TEST_LIBS = [
-     "libadbd",
-     "libadbd_auth",
-     "libbase",
-     "libusb",
-+    "libmtprpc_protocol",
- ]
-@@ -923,12 +944,13 @@ cc_test {
-     srcs: libadb_test_srcs + [
-         "daemon/restart_service.cpp",
-         "daemon/restart_service_test.cpp",
-         "daemon/services.cpp",
-         "daemon/shell_service.cpp",
-         "daemon/shell_service_test.cpp",
-         "daemon/tradeinmode.cpp",
-         "daemon/tradeinmode_test.cpp",
-         "test_utils/test_utils.cpp",
-         "shell_service_protocol_test.cpp",
-         "mdns_test.cpp",
+@@ -965,7 +985,45 @@
+    test_suites: [
+        "general-tests",
+        "mts-adbd",
+    ],
+    require_root: true,
+}
+
++// Opt-in only: requires a prepared image with the mtprpcd init service running.
++// Provision /data/adb/mtpadb/device.id and /data/adb/mtpadb/device.key.
++// Keep this test out of stock adbd_test and general-tests/mts-adbd suites.
++cc_test {
++    name: "mtpadbd_rpc_service_integration_test",
++    defaults: [
++        "adbd_defaults",
++        "libadbd_binary_dependencies",
++    ],
++    recovery_available: false,
++    srcs: [
++        "daemon/restart_service.cpp",
++        "daemon/services.cpp",
++        "daemon/shell_service.cpp",
++        "daemon/tradeinmode.cpp",
++        "test_utils/test_utils.cpp",
++        "shell_service_protocol.cpp",
 +        ":mtpadbd_rpc_service_test_srcs",
-     ],
-@@ -938,10 +960,11 @@
-     target: {
-         android: {
-             srcs: [
-                 "daemon/property_monitor_test.cpp",
-             ],
-             static_libs: [
-                 "android_trade_in_mode_flags_cc_lib",
++    ],
++    test_config: "adbd_test.xml",
++    target: {
++        android: {
++            static_libs: [
++                "android_trade_in_mode_flags_cc_lib",
 +                "libmtpadbd_rpc_service",
-             ],
-         },
-     },
++            ],
++        },
++    },
++    shared_libs: ["liblog"],
++    version_script: "adbd_test.map",
++    stl: "libc++_static",
++    static_libs: ADBD_TEST_LIBS + [
++        "libmtprpc_protocol",
++    ],
++    exclude_shared_libs: ADBD_TEST_LIBS,
++    test_suites: ["mtpadb-integration-tests"],
++    require_root: true,
++}
 diff --git a/daemon/main.cpp b/daemon/main.cpp
 --- a/daemon/main.cpp
 +++ b/daemon/main.cpp
@@ -140,7 +152,7 @@ diff --git a/daemon/services.cpp b/daemon/services.cpp
 +#endif
 +
  #include "daemon/file_sync_service.h"
-@@ -276,8 +276,15 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
+@@ -276,6 +280,13 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
      ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
  
      if (is_in_tradeinmode() && !allow_tradeinmode_command(name)) {

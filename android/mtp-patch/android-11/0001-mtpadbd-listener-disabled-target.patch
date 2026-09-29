@@ -2,7 +2,7 @@ diff --git a/adb/Android.bp b/adb/Android.bp
 index dee48bf..d479a14 100644
 --- a/adb/Android.bp
 +++ b/adb/Android.bp
-@@ -470,13 +470,16 @@
+@@ -470,14 +470,17 @@
      target: {
          android: {
              srcs: [
@@ -62,32 +62,42 @@ index dee48bf..d479a14 100644
  phony {
      // Interface between adbd in a module and the system.
      name: "adbd_system_api",
-@@ -661,8 +699,9 @@ cc_test {
-     srcs: libadb_test_srcs + [
-         "daemon/services.cpp",
-         "daemon/shell_service.cpp",
-         "daemon/shell_service_test.cpp",
-         "shell_service_protocol.cpp",
-         "shell_service_protocol_test.cpp",
-         "mdns_test.cpp",
-+        ":mtpadbd_rpc_service_test_srcs",
-     ],
-@@ -676,7 +715,8 @@ cc_test {
-     static_libs: [
-         "libadbd",
-         "libadbd_auth",
-         "libbase",
-         "libcrypto_utils",
-         "libusb",
-+        "libmtprpc_protocol",
-     ],
-@@ -683,1 +723,6 @@
+@@ -683,4 +721,35 @@
      test_suites: ["device-tests", "mts"],
+     require_root: true,
+ }
+ 
++// Opt-in only: requires a prepared image with the mtprpcd init service running.
++// Provision /data/adb/mtpadb/device.id and /data/adb/mtpadb/device.key.
++// Keep this test out of stock adbd_test and device-tests/mts suites.
++cc_test {
++    name: "mtpadbd_rpc_service_integration_test",
++    defaults: ["adbd_defaults", "libadbd_binary_dependencies"],
++    recovery_available: false,
++    srcs: [
++        "daemon/services.cpp",
++        "daemon/shell_service.cpp",
++        "shell_service_protocol.cpp",
++        ":mtpadbd_rpc_service_test_srcs",
++    ],
++    test_config: "adb_test.xml",
++    shared_libs: ["liblog"],
++    static_libs: [
++        "libadbd",
++        "libadbd_auth",
++        "libbase",
++        "libcrypto_utils",
++        "libusb",
++        "libmtprpc_protocol",
++    ],
 +    target: {
 +        android: {
 +            static_libs: ["libmtpadbd_rpc_service"],
 +        },
 +    },
++    test_suites: ["mtpadb-integration-tests"],
++    require_root: true,
++}
 diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
 --- a/adb/daemon/main.cpp
 +++ b/adb/daemon/main.cpp
@@ -182,7 +192,7 @@ diff --git a/adb/daemon/services.cpp b/adb/daemon/services.cpp
 +#endif
 +
  #include "daemon/file_sync_service.h"
-@@ -261,4 +265,11 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
+@@ -261,3 +265,10 @@ unique_fd daemon_service_to_fd(std::string_view name, atransport* transport) {
      ADB_LOG(Service) << "transport " << transport->serial_name() << " opening service " << name;
  
 +#if defined(__ANDROID__)
