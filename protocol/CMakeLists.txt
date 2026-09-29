@@ -30,4 +30,15 @@ if(BUILD_TESTING)
     target_compile_features(mtprpc_crypto_test PRIVATE cxx_std_17)
     target_link_libraries(mtprpc_crypto_test PRIVATE mtprpc_protocol)
     add_test(NAME mtprpc_crypto_test COMMAND mtprpc_crypto_test)
+    find_package(Threads REQUIRED)
+    add_executable(mtprpcd_socket_test
+        ${PROJECT_SOURCE_DIR}/tests/adb/mtprpcd_socket_test.cpp
+    )
+    target_include_directories(mtprpcd_socket_test
+        PRIVATE ${PROJECT_SOURCE_DIR}/android
+    )
+    target_compile_features(mtprpcd_socket_test PRIVATE cxx_std_17)
+    target_link_libraries(mtprpcd_socket_test PRIVATE mtprpc_protocol Threads::Threads)
+    add_test(NAME mtprpcd_socket_test COMMAND mtprpcd_socket_test)
+    set_tests_properties(mtprpcd_socket_test PROPERTIES TIMEOUT 30)
 endif()
