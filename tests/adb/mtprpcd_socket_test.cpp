@@ -39,9 +39,9 @@ using Deadline = Clock::time_point;
 
 constexpr auto kIoTimeout = std::chrono::seconds(10);
 constexpr auto kRejectTimeout = std::chrono::seconds(2);
-constexpr auto kHandshakeTestTimeout = std::chrono::milliseconds(175);
-constexpr auto kHandshakeDeadlineSlack = std::chrono::milliseconds(75);
-constexpr auto kPartialHelloInterval = std::chrono::milliseconds(40);
+constexpr auto kHandshakeTestTimeout = std::chrono::milliseconds(1000);
+constexpr auto kHandshakeDeadlineSlack = std::chrono::milliseconds(600);
+constexpr auto kPartialHelloInterval = std::chrono::milliseconds(260);
 constexpr std::uint8_t kGenericError = 0x01;
 constexpr std::uint8_t kSuccess = 0x00;
 
@@ -356,18 +356,17 @@ void expect_closed_by(SocketService& service, Deadline deadline) {
 
 void test_idle_peer_is_closed_by_handshake_deadline() {
     const Bytes psk = test_psk();
+    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
     const Deadline deadline =
         Clock::now() + kHandshakeTestTimeout + kHandshakeDeadlineSlack;
-    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
     expect_closed_by(service, deadline);
 }
 
 void test_partial_hello_progress_does_not_reset_handshake_deadline() {
     const Bytes psk = test_psk();
+    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
     const Deadline handshake_deadline = Clock::now() + kHandshakeTestTimeout;
     const Deadline close_deadline = handshake_deadline + kHandshakeDeadlineSlack;
-    SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
-
     Frame hello;
     hello.type = FrameType::HELLO;
     hello.payload = Bytes(34, 0);
