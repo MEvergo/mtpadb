@@ -1,0 +1,48 @@
+#include "functionfs_descriptors.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <span>
+#include <vector>
+namespace {
+
+void require_equal(std::span<const std::uint8_t> actual,
+                   const std::vector<std::uint8_t>& expected,
+                   const char* label) {
+    if (actual.size() == expected.size() &&
+        std::equal(actual.begin(), actual.end(), expected.begin())) {
+        return;
+    }
+    std::cerr << label << " differs: got " << actual.size()
+              << " bytes, expected " << expected.size() << "\n";
+    std::exit(1);
+}
+
+}  // namespace
+
+int main() {
+    const std::vector<std::uint8_t> expected_descriptors = {
+        0x03, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00,
+        0x09, 0x04, 0x00, 0x00, 0x02, 0xff, 0x42, 0x01, 0x01,
+        0x07, 0x05, 0x01, 0x02, 0x40, 0x00, 0x00,
+        0x07, 0x05, 0x81, 0x02, 0x40, 0x00, 0x00,
+        0x09, 0x04, 0x00, 0x00, 0x02, 0xff, 0x42, 0x01, 0x01,
+        0x07, 0x05, 0x01, 0x02, 0x00, 0x02, 0x00,
+        0x07, 0x05, 0x81, 0x02, 0x00, 0x02, 0x00,
+    };
+    require_equal(mtpadb::gadget::build_functionfs_descriptors(),
+                  expected_descriptors, "FunctionFS descriptors");
+
+    const std::vector<std::uint8_t> expected_strings = {
+        0x02, 0x00, 0x00, 0x00, 0x1d, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x09, 0x04,
+        'M', 'T', 'P', 'A', 'D', 'B', ' ', 'A', 'D', 'B', 0x00,
+    };
+    require_equal(mtpadb::gadget::build_functionfs_strings(),
+                  expected_strings, "FunctionFS strings");
+}

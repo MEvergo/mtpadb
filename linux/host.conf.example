@@ -1,0 +1,9 @@
+# Test-only USB identity. Replace with IDs assigned for your own use.
+[gadget]
+manufacturer = MTPADB Project
+product = Virtual Android Debug Transport
+serial = MTPADB-0001
+vid = 0xffff
+pid = 0xffff
+# Optional: select a specific dummy_hcd UDC. Automatic selection is dummy_hcd-only.
+# udc = dummy_udc.0

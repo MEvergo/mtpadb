@@ -1,0 +1,1071 @@
+diff --git a/Android.bp b/Android.bp
+index cf93ee0..b7e956b 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -841,13 +841,17 @@ cc_binary {
+         "host_adbd_supported",
+         "adbd_binary_defaults",
+     ],
++    host_supported: false,
+     cflags: [
+         "-DMTPADB_PROJECT_DAEMON=1",
+     ],
+     target: {
+         android: {
++            srcs: ["daemon/mtpadbd_wireless.cpp"],
+             static_libs: [
+                 "android_trade_in_mode_flags_cc_lib",
++                "libadb_pairing_server_static",
++                "libmtpadbd_wireless_control_server",
+             ],
+         },
+     },
+diff --git a/adb_wifi.h b/adb_wifi.h
+index bc19d36..c4fe0ae 100644
+--- a/adb_wifi.h
++++ b/adb_wifi.h
+@@ -16,6 +16,7 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
+ #include <optional>
+ #include <string>
+ 
+@@ -33,6 +34,9 @@ struct AdbdAuthContext;
+ 
+ void adbd_wifi_init(AdbdAuthContext* ctx);
+ void adbd_wifi_secure_connect(atransport* t);
++std::optional<uint16_t> mtpadbd_wifi_start_tls_server(const std::string& bind_address,
++                                                      uint16_t requested_port);
++void mtpadbd_wifi_stop_tls_server();
+ void adbd_send_tls_server_port(uint16_t port);
+ 
+ #endif
+diff --git a/daemon/adb_wifi.cpp b/daemon/adb_wifi.cpp
+index ea6f6c1..10893f9 100644
+--- a/daemon/adb_wifi.cpp
++++ b/daemon/adb_wifi.cpp
+@@ -16,8 +16,16 @@
+ 
+ #include "adb_wifi.h"
+ 
++#include <arpa/inet.h>
++#include <cstring>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netdb.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
+ #include <unistd.h>
+-#include <optional>
++#include <string>
++#include <utility>
+ 
+ #include <adbd_auth.h>
+ #include <android-base/properties.h>
+@@ -46,9 +54,81 @@ static void adb_disconnected(void* unused, atransport* t) {
+ // from WaitForProperty
+ #if defined(__ANDROID__)
+ 
++int mtpadbd_bound_server(const std::string& address, uint16_t port) {
++    addrinfo hints{};
++    hints.ai_family = AF_UNSPEC;
++    hints.ai_socktype = SOCK_STREAM;
++    hints.ai_protocol = IPPROTO_TCP;
++    hints.ai_flags = AI_NUMERICHOST;
++    addrinfo* addresses = nullptr;
++    if (getaddrinfo(address.c_str(), nullptr, &hints, &addresses) != 0) return -1;
++
++    int server_fd = -1;
++    for (addrinfo* item = addresses; item != nullptr && server_fd < 0; item = item->ai_next) {
++        sockaddr_storage bound_address{};
++        if (item->ai_addrlen > sizeof(bound_address)) continue;
++        memcpy(&bound_address, item->ai_addr, item->ai_addrlen);
++        if (bound_address.ss_family == AF_INET) {
++            reinterpret_cast<sockaddr_in*>(&bound_address)->sin_port = htons(port);
++        } else if (bound_address.ss_family == AF_INET6) {
++            auto* address6 = reinterpret_cast<sockaddr_in6*>(&bound_address);
++            address6->sin6_port = htons(port);
++            if (IN6_IS_ADDR_LINKLOCAL(&address6->sin6_addr) && address6->sin6_scope_id == 0) {
++                ifaddrs* interfaces = nullptr;
++                if (getifaddrs(&interfaces) != 0) continue;
++                for (ifaddrs* interface = interfaces; interface != nullptr;
++                     interface = interface->ifa_next) {
++                    if (interface->ifa_addr == nullptr ||
++                        interface->ifa_addr->sa_family != AF_INET6) {
++                        continue;
++                    }
++                    auto* interface_address =
++                            reinterpret_cast<sockaddr_in6*>(interface->ifa_addr);
++                    if (memcmp(&interface_address->sin6_addr, &address6->sin6_addr,
++                               sizeof(address6->sin6_addr)) == 0) {
++                        address6->sin6_scope_id = if_nametoindex(interface->ifa_name);
++                        break;
++                    }
++                }
++                freeifaddrs(interfaces);
++                if (address6->sin6_scope_id == 0) continue;
++            }
++        } else {
++            continue;
++        }
++
++        int fd = socket(item->ai_family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
++        if (fd < 0) continue;
++        int enabled = 1;
++        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
++        if (item->ai_family == AF_INET6 &&
++            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof(enabled)) != 0) {
++            close(fd);
++            continue;
++        }
++        if (bind(fd, reinterpret_cast<sockaddr*>(&bound_address), item->ai_addrlen) == 0 &&
++            listen(fd, 4) == 0) {
++            server_fd = fd;
++        } else {
++            close(fd);
++        }
++    }
++    freeaddrinfo(addresses);
++    return server_fd;
++}
++
++uint16_t mtpadbd_socket_port(int fd) {
++    sockaddr_storage address{};
++    socklen_t size = sizeof(address);
++    if (getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) != 0) return 0;
++    if (address.ss_family == AF_INET) return ntohs(reinterpret_cast<sockaddr_in*>(&address)->sin_port);
++    if (address.ss_family == AF_INET6) return ntohs(reinterpret_cast<sockaddr_in6*>(&address)->sin6_port);
++    return 0;
++}
++
+ class TlsServer {
+   public:
+-    explicit TlsServer(int port);
++    explicit TlsServer(int port, std::string bind_address = {});
+     virtual ~TlsServer();
+     bool Start();
+     uint16_t port() { return port_; };
+@@ -59,9 +139,11 @@ class TlsServer {
+ 
+     fdevent* fd_event_ = nullptr;
+     uint16_t port_;
++    std::string bind_address_;
+ };  // TlsServer
+ 
+-TlsServer::TlsServer(int port) : port_(port) {}
++TlsServer::TlsServer(int port, std::string bind_address)
++    : port_(port), bind_address_(std::move(bind_address)) {}
+ 
+ TlsServer::~TlsServer() {
+     fdevent* fde = fd_event_;
+@@ -85,13 +167,14 @@ bool TlsServer::Start() {
+     };
+ 
+     std::string err;
+-    unique_fd fd(network_inaddr_any_server(port_, SOCK_STREAM, &err));
++    unique_fd fd(bind_address_.empty() ? network_inaddr_any_server(port_, SOCK_STREAM, &err)
++                                       : mtpadbd_bound_server(bind_address_, port_));
+     if (fd.get() == -1) {
+         LOG(ERROR) << "Failed to start TLS server [" << err << "]";
+         return false;
+     }
+     close_on_exec(fd.get());
+-    int port = socket_get_local_port(fd.get());
++    int port = bind_address_.empty() ? socket_get_local_port(fd.get()) : mtpadbd_socket_port(fd.get());
+     if (port <= 0 || port > 65535) {
+         LOG(ERROR) << "Invalid port for tls server";
+         return false;
+@@ -206,6 +289,32 @@ static void start_wifi_enabled_observer() {
+ 
+ }  // namespace
+ 
++std::optional<uint16_t> mtpadbd_wifi_start_tls_server(const std::string& bind_address,
++                                                       uint16_t requested_port) {
++#if defined(__ANDROID__)
++    if (sTlsServer != nullptr) return std::nullopt;
++    auto* server = new TlsServer(requested_port, bind_address);
++    if (!server->Start()) {
++        delete server;
++        return std::nullopt;
++    }
++    sTlsServer = server;
++    return server->port();
++#else
++    return std::nullopt;
++#endif
++}
++
++void mtpadbd_wifi_stop_tls_server() {
++#if defined(__ANDROID__)
++    if (sTlsServer != nullptr) {
++        delete sTlsServer;
++        sTlsServer = nullptr;
++        kick_all_tcp_tls_transports();
++    }
++#endif
++}
++
+ void adbd_wifi_init(AdbdAuthContext* ctx) {
+     auth_ctx = ctx;
+ #if defined(__ANDROID__)
+@@ -214,15 +323,20 @@ void adbd_wifi_init(AdbdAuthContext* ctx) {
+ }
+ 
+ void adbd_wifi_secure_connect(atransport* t) {
+-    t->AddDisconnect(&adb_disconnect);
++    if (auth_ctx != nullptr) {
++        t->AddDisconnect(&adb_disconnect);
++    }
+     handle_online(t);
+     send_connect(t);
+     LOG(INFO) << __func__ << ": connected " << t->serial;
+-    t->auth_id = adbd_auth_tls_device_connected(auth_ctx, kAdbTransportTypeWifi, t->auth_key.data(),
+-                                                t->auth_key.size());
++    if (auth_ctx != nullptr) {
++        t->auth_id = adbd_auth_tls_device_connected(auth_ctx, kAdbTransportTypeWifi,
++                                                    t->auth_key.data(), t->auth_key.size());
++    }
+ }
+ 
+ void adbd_send_tls_server_port(uint16_t port) {
++    if (auth_ctx == nullptr) return;
+     if (__builtin_available(android 37, *)) {
+         adbd_auth_send_tls_server_port(auth_ctx, port);
+     } else {
+diff --git a/daemon/auth.cpp b/daemon/auth.cpp
+index 495df66..c7c2912 100644
+--- a/daemon/auth.cpp
++++ b/daemon/auth.cpp
+@@ -45,6 +45,7 @@
+ #include "adb_auth.h"
+ #include "adb_io.h"
+ #include "adb_wifi.h"
++#include "daemon/mtpadbd_wireless.h"
+ #include "fdevent/fdevent.h"
+ #include "transport.h"
+ #include "types.h"
+@@ -54,6 +55,8 @@ using namespace adb::tls;
+ using namespace std::chrono_literals;
+ 
+ static AdbdAuthContext* auth_ctx;
++static mtpadbd_wireless_public_key_enumerator mtpadbd_public_key_enumerator = nullptr;
++static void* mtpadbd_public_key_enumerator_opaque = nullptr;
+ 
+ static RSA* rsa_pkey = nullptr;
+ 
+@@ -95,7 +98,17 @@ static atransport* transport_from_callback_arg(void* id) {
+     return t;
+ }
+ 
+-static void IteratePublicKeys(std::function<bool(std::string_view public_key)> f) {
++static void IteratePublicKeys(std::function<bool(std::string_view)> f) {
++    if (mtpadbd_public_key_enumerator != nullptr) {
++        mtpadbd_public_key_enumerator(
++                mtpadbd_public_key_enumerator_opaque,
++                [](void* opaque, std::string_view public_key) {
++                    return (*static_cast<decltype(f)*>(opaque))(public_key);
++                },
++                &f);
++        return;
++    }
++    if (auth_ctx == nullptr) return;
+     adbd_auth_get_public_keys(
+             auth_ctx,
+             [](void* opaque, const char* public_key, size_t len) {
+@@ -104,6 +117,13 @@ static void IteratePublicKeys(std::function<bool(std::string_view public_key)> f
+             &f);
+ }
+ 
++void adbd_auth_set_mtpadbd_public_key_enumerator(
++        mtpadbd_wireless_public_key_enumerator enumerator, void* opaque) {
++    mtpadbd_public_key_enumerator = enumerator;
++    mtpadbd_public_key_enumerator_opaque = opaque;
++    if (enumerator != nullptr) auth_required = true;
++}
++
+ bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list() {
+     if (!auth_required) {
+         return nullptr;
+@@ -117,13 +137,21 @@ bssl::UniquePtr<STACK_OF(X509_NAME)> adbd_tls_client_ca_list() {
+         uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
+         const std::string& pubkey = split[0];
+         if (b64_pton(pubkey.c_str(), keybuf, sizeof(keybuf)) != ANDROID_PUBKEY_ENCODED_SIZE) {
+-            LOG(ERROR) << "Invalid base64 key " << pubkey;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                LOG(ERROR) << "Invalid base64 key " << pubkey;
++            } else {
++                LOG(ERROR) << "Invalid wireless peer public key";
++            }
+             return true;
+         }
+ 
+         RSA* key = nullptr;
+         if (!android_pubkey_decode(keybuf, ANDROID_PUBKEY_ENCODED_SIZE, &key)) {
+-            LOG(ERROR) << "Failed to parse key " << pubkey;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                LOG(ERROR) << "Failed to parse key " << pubkey;
++            } else {
++                LOG(ERROR) << "Failed to parse wireless peer public key";
++            }
+             return true;
+         }
+         bssl::UniquePtr<RSA> rsa_key(key);
+@@ -164,13 +192,21 @@ bool adbd_auth_verify(const char* token, size_t token_size, const std::string& s
+         uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
+         const std::string& pubkey = split[0];
+         if (b64_pton(pubkey.c_str(), keybuf, sizeof(keybuf)) != ANDROID_PUBKEY_ENCODED_SIZE) {
+-            LOG(ERROR) << "Invalid base64 key " << pubkey;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                LOG(ERROR) << "Invalid base64 key " << pubkey;
++            } else {
++                LOG(ERROR) << "Invalid wireless peer public key";
++            }
+             return true;
+         }
+ 
+         RSA* key = nullptr;
+         if (!android_pubkey_decode(keybuf, ANDROID_PUBKEY_ENCODED_SIZE, &key)) {
+-            LOG(ERROR) << "Failed to parse key " << pubkey;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                LOG(ERROR) << "Failed to parse key " << pubkey;
++            } else {
++                LOG(ERROR) << "Failed to parse wireless peer public key";
++            }
+             return true;
+         }
+ 
+@@ -278,11 +314,12 @@ void adbd_auth_verified(atransport* t) {
+ 
+ static void adb_disconnected(void* unused, atransport* t) {
+     VLOG(AUTH) << "ADB disconnect";
+-    CHECK(t->auth_id.has_value());
++    if (auth_ctx == nullptr || !t->auth_id.has_value()) return;
+     adbd_auth_notify_disconnect(auth_ctx, t->auth_id.value());
+ }
+ 
+ void adbd_auth_confirm_key(atransport* t) {
++    if (auth_ctx == nullptr) return;
+     VLOG(AUTH) << "prompting user to authorize key";
+     t->AddDisconnect(&adb_disconnect);
+     if (adbd_auth_prompt_user_with_id) {
+@@ -295,6 +332,7 @@ void adbd_auth_confirm_key(atransport* t) {
+ }
+ 
+ void adbd_notify_framework_connected_key(atransport* t) {
++    if (auth_ctx == nullptr) return;
+     t->auth_id = adbd_auth_notify_auth(auth_ctx, t->auth_key.data(), t->auth_key.size());
+ }
+ 
+@@ -323,13 +361,21 @@ int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key) {
+         uint8_t keybuf[ANDROID_PUBKEY_ENCODED_SIZE + 1];
+         const std::string& pubkey = split[0];
+         if (b64_pton(pubkey.c_str(), keybuf, sizeof(keybuf)) != ANDROID_PUBKEY_ENCODED_SIZE) {
+-            LOG(ERROR) << "Invalid base64 key " << pubkey;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                LOG(ERROR) << "Invalid base64 key " << pubkey;
++            } else {
++                LOG(ERROR) << "Invalid wireless peer public key";
++            }
+             return true;
+         }
+ 
+         RSA* key = nullptr;
+         if (!android_pubkey_decode(keybuf, ANDROID_PUBKEY_ENCODED_SIZE, &key)) {
+-            LOG(ERROR) << "Failed to parse key " << pubkey;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                LOG(ERROR) << "Failed to parse key " << pubkey;
++            } else {
++                LOG(ERROR) << "Failed to parse wireless peer public key";
++            }
+             return true;
+         }
+ 
+@@ -337,10 +383,14 @@ int adbd_tls_verify_cert(X509_STORE_CTX* ctx, std::string* auth_key) {
+         bssl::UniquePtr<EVP_PKEY> known_evp(EVP_PKEY_new());
+         EVP_PKEY_set1_RSA(known_evp.get(), key);
+         if (EVP_PKEY_cmp(known_evp.get(), evp_pkey.get())) {
+-            VLOG(AUTH) << "Matched auth_key=" << public_key;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                VLOG(AUTH) << "Matched auth_key=" << public_key;
++            }
+             verified = true;
+         } else {
+-            VLOG(AUTH) << "auth_key doesn't match [" << public_key << "]";
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                VLOG(AUTH) << "auth_key doesn't match [" << public_key << "]";
++            }
+         }
+         RSA_free(key);
+         if (verified) {
+@@ -367,7 +417,9 @@ void adbd_auth_tls_handshake(atransport* t) {
+     std::thread([t]() {
+         std::string auth_key;
+         if (t->connection()->DoTlsHandshake(rsa_pkey, &auth_key)) {
+-            VLOG(AUTH) << "auth_key=" << auth_key;
++            if (mtpadbd_public_key_enumerator == nullptr) {
++                VLOG(AUTH) << "auth_key=" << auth_key;
++            }
+             if (t->IsTcpDevice()) {
+                 t->auth_key = auth_key;
+                 adbd_wifi_secure_connect(t);
+diff --git a/daemon/main.cpp b/daemon/main.cpp
+index 6fb090c..40fc4ee 100644
+--- a/daemon/main.cpp
++++ b/daemon/main.cpp
+@@ -56,6 +56,7 @@
+ 
+ #include "daemon/jdwp_service.h"
+ #include "services.h"
++#include "daemon/mtpadbd_wireless.h"
+ #include "daemon/mdns.h"
+ #include "daemon/transport_daemon.h"
+ #include "daemon/watchdog.h"
+@@ -223,7 +224,7 @@ int adbd_main() {
+ 
+     // We need to call this even if auth isn't enabled because the file
+     // descriptor will always be open.
+-    adbd_cloexec_auth_socket();
++    if (!mtpadbd_mode) adbd_cloexec_auth_socket();
+ 
+ #if defined(__ANDROID__)
+     bool device_unlocked = android::base::GetProperty("ro.boot.verifiedbootstate", "") == "orange";
+@@ -260,6 +261,9 @@ int adbd_main() {
+     // after we drop privileges.
+     watchdog::Initialize();
+ #endif
++#if defined(MTPADB_PROJECT_DAEMON)
++    mtpadbd_wireless_runtime_start();
++#endif
+ 
+     if (mtpadbd_mode) {
+         LOG(INFO) << "mtpadbd bypasses stock auth and TLS property observers";
+diff --git a/daemon/mdns.cpp b/daemon/mdns.cpp
+index 7a4839b..91d0038 100644
+--- a/daemon/mdns.cpp
++++ b/daemon/mdns.cpp
+@@ -20,14 +20,23 @@
+ #include "adb_trace.h"
+ #include "sysdeps.h"
+ 
++#include <arpa/inet.h>
+ #include <dns_sd.h>
+ #include <endian.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
+ #include <unistd.h>
+ 
+ #include <chrono>
++#include <cstring>
+ #include <mutex>
++#include <optional>
+ #include <random>
++#include <string>
+ #include <thread>
++#include <vector>
+ 
+ #include <android-base/logging.h>
+ #include <android-base/properties.h>
+@@ -218,3 +227,118 @@ bool is_adb_secure_connect_service_registered() {
+     std::lock_guard<std::mutex> lock(mdns_lock);
+     return mdns_registered[kADBSecureConnectServiceRefIndex];
+ }
++
++namespace {
++
++std::optional<uint32_t> mtpadbd_interface_index(const char* bind_address) {
++    if (bind_address == nullptr || bind_address[0] == '\0') return std::nullopt;
++    in_addr ipv4{};
++    in6_addr ipv6{};
++    int family = AF_UNSPEC;
++    const void* requested = nullptr;
++    if (inet_pton(AF_INET, bind_address, &ipv4) == 1) {
++        family = AF_INET;
++        requested = &ipv4;
++    } else if (inet_pton(AF_INET6, bind_address, &ipv6) == 1) {
++        family = AF_INET6;
++        requested = &ipv6;
++    } else {
++        return std::nullopt;
++    }
++
++    ifaddrs* interfaces = nullptr;
++    if (getifaddrs(&interfaces) != 0) return std::nullopt;
++    std::optional<uint32_t> result;
++    for (ifaddrs* interface = interfaces; interface != nullptr; interface = interface->ifa_next) {
++        if (interface->ifa_addr == nullptr || interface->ifa_addr->sa_family != family) continue;
++        const void* candidate = family == AF_INET
++                                        ? static_cast<const void*>(
++                                                  &reinterpret_cast<sockaddr_in*>(
++                                                           interface->ifa_addr)->sin_addr)
++                                        : static_cast<const void*>(
++                                                  &reinterpret_cast<sockaddr_in6*>(
++                                                           interface->ifa_addr)->sin6_addr);
++        const size_t address_size = family == AF_INET ? sizeof(ipv4) : sizeof(ipv6);
++        if (memcmp(candidate, requested, address_size) == 0) {
++            const uint32_t index = if_nametoindex(interface->ifa_name);
++            if (index != 0) result = index;
++            break;
++        }
++    }
++    freeifaddrs(interfaces);
++    return result;
++}
++
++bool register_mtpadbd_mdns_service(int service_index, const char* bind_address, uint16_t port) {
++    if (service_index != kADBSecurePairingServiceRefIndex &&
++        service_index != kADBSecureConnectServiceRefIndex) {
++        return false;
++    }
++    const auto interface_index = mtpadbd_interface_index(bind_address);
++    if (!interface_index.has_value()) return false;
++    start_mdnsd();
++    const std::string service_name = mtpadbd_adb_mdns_device_guid();
++    if (service_name.empty()) return false;
++
++    std::vector<char> txt_record;
++    if (kADBDNSServiceTxtRecords[service_index] != nullptr) {
++        const size_t txt_size = strlen(kADBDNSServiceTxtRecords[service_index]);
++        txt_record.resize(1 + txt_size);
++        txt_record[0] = static_cast<char>(txt_size);
++        memcpy(txt_record.data() + 1, kADBDNSServiceTxtRecords[service_index], txt_size);
++    }
++
++    std::lock_guard<std::mutex> lock(mdns_lock);
++    DNSServiceRef service_ref = nullptr;
++    const DNSServiceErrorType error = DNSServiceRegister(
++            &service_ref, 0, *interface_index, service_name.c_str(),
++            kADBDNSServices[service_index], nullptr, nullptr, htobe16(port),
++            static_cast<uint16_t>(txt_record.size()),
++            txt_record.empty() ? nullptr : txt_record.data(), mdns_callback, nullptr);
++    if (error != kDNSServiceErr_NoError) {
++        if (service_ref != nullptr) DNSServiceRefDeallocate(service_ref);
++        LOG(ERROR) << "Could not register project mDNS service "
++                   << kADBDNSServices[service_index] << ", error (" << error << ").";
++        return false;
++    }
++    if (mdns_registered[service_index]) DNSServiceRefDeallocate(mdns_refs[service_index]);
++    mdns_refs[service_index] = service_ref;
++    mdns_registered[service_index] = true;
++    return true;
++}
++
++void unregister_mtpadbd_mdns_service(int service_index) {
++    std::lock_guard<std::mutex> lock(mdns_lock);
++    if (!mdns_registered[service_index]) return;
++    DNSServiceRefDeallocate(mdns_refs[service_index]);
++    mdns_refs[service_index] = nullptr;
++    mdns_registered[service_index] = false;
++}
++
++}  // namespace
++
++bool mtpadbd_register_adb_secure_pairing_service(const char* bind_address, uint16_t port) {
++    return register_mtpadbd_mdns_service(kADBSecurePairingServiceRefIndex, bind_address, port);
++}
++
++bool mtpadbd_register_adb_secure_connect_service(const char* bind_address, uint16_t port) {
++    return register_mtpadbd_mdns_service(kADBSecureConnectServiceRefIndex, bind_address, port);
++}
++
++void mtpadbd_unregister_adb_secure_pairing_service() {
++    unregister_mtpadbd_mdns_service(kADBSecurePairingServiceRefIndex);
++}
++
++void mtpadbd_unregister_adb_secure_connect_service() {
++    unregister_mtpadbd_mdns_service(kADBSecureConnectServiceRefIndex);
++}
++
++std::string mtpadbd_adb_mdns_device_guid() {
++    std::string guid = android::base::GetProperty("persist.mtpadb.wifi.guid", "");
++    if (guid.empty()) {
++        guid = GenerateDeviceGuid();
++        CHECK(!guid.empty());
++        android::base::SetProperty("persist.mtpadb.wifi.guid", guid);
++    }
++    return guid;
++}
+diff --git a/daemon/mdns.h b/daemon/mdns.h
+index aa6c6a3..f73667e 100644
+--- a/daemon/mdns.h
++++ b/daemon/mdns.h
+@@ -17,9 +17,20 @@
+ #ifndef _DAEMON_MDNS_H_
+ #define _DAEMON_MDNS_H_
+ 
++#include <string>
++#include <stdint.h>
++
+ // Setup mDNS and declare which TCP port ADBd is currently listening on for non-encrypted traffic.
+ void setup_mdns(int tcp_port);
+ 
++// Project-only secure services are scoped to the interface containing the
++// selected local address. These helpers do not affect stock adbd registration.
++bool mtpadbd_register_adb_secure_pairing_service(const char* bind_address, uint16_t port);
++bool mtpadbd_register_adb_secure_connect_service(const char* bind_address, uint16_t port);
++void mtpadbd_unregister_adb_secure_pairing_service();
++void mtpadbd_unregister_adb_secure_connect_service();
++std::string mtpadbd_adb_mdns_device_guid();
++
+ // mDNS advertise the TLS port ADBd is currently listening on for encrypted traffic.
+ void register_adb_secure_connect_service(int tls_port);
+ void unregister_adb_secure_connect_service();
+diff --git a/daemon/mtpadbd_wireless.cpp b/daemon/mtpadbd_wireless.cpp
+new file mode 100644
+index 0000000..6963a05
+--- /dev/null
++++ b/daemon/mtpadbd_wireless.cpp
+@@ -0,0 +1,214 @@
++#define TRACE_TAG ADB_WIRELESS
++
++#include "daemon/mtpadbd_wireless.h"
++
++#include <fcntl.h>
++#include <unistd.h>
++
++#include <array>
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <cstring>
++#include <deque>
++#include <mutex>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <thread>
++#include <utility>
++
++#include <adb/pairing/pairing_connection.h>
++#include <adb/pairing/pairing_server.h>
++#include <android-base/logging.h>
++#include <cutils/sockets.h>
++#include <openssl/sha.h>
++
++#include "adb_wifi.h"
++#include "daemon/mdns.h"
++#include "control_server.h"
++#include "wireless_control.h"
++#include "pairing_connection/mtpadbd_pairing_server.h"
++
++namespace mtpadb::mtpadbd {
++namespace {
++
++class AospWirelessRuntime final : public WirelessRuntime {
++  public:
++    void Start(WirelessControl& control) {
++        {
++            std::lock_guard<std::mutex> lock(result_mutex_);
++            if (started_) return;
++            started_ = true;
++        }
++        control_ = &control;
++        adbd_auth_set_mtpadbd_public_key_enumerator(EnumeratePublicKeys, &control);
++        result_thread_ = std::thread([this]() { ProcessPairingResults(); });
++
++        const int listening_fd = android_get_control_socket("mtpadbd-control");
++        if (listening_fd < 0) {
++            PLOG(ERROR) << "Failed to get mtpadbd control socket";
++            return;
++        }
++        fcntl(listening_fd, F_SETFD, FD_CLOEXEC);
++        std::thread([listening_fd, &control]() {
++            run_wireless_control_server(listening_fd, control);
++            close(listening_fd);
++        }).detach();
++    }
++
++    std::optional<uint16_t> open_pairing_listener(std::string_view bind_address,
++                                                  uint16_t requested_port,
++                                                  std::string_view pairing_code) override {
++        std::lock_guard<std::mutex> lock(pairing_server_mutex_);
++        if (geteuid() != 0) {
++            LOG(ERROR) << "mtpadbd wireless pairing requires root-owned peer storage";
++            return std::nullopt;
++        }
++        if (pairing_server_ != nullptr || pairing_code.size() != 6) return std::nullopt;
++
++        const std::string device_guid = mtpadbd_adb_mdns_device_guid();
++        if (device_guid.empty()) return std::nullopt;
++        PeerInfo device_info{};
++        if (device_guid.size() >= sizeof(device_info.data)) return std::nullopt;
++        device_info.type = ADB_DEVICE_GUID;
++        std::memcpy(device_info.data, device_guid.c_str(), device_guid.size() + 1);
++
++        const auto* password = reinterpret_cast<const uint8_t*>(pairing_code.data());
++        PairingServerCtx* server = mtpadbd_pairing_server_new_no_cert_on_address(
++                password, pairing_code.size(), &device_info, std::string(bind_address).c_str(),
++                requested_port);
++        if (server == nullptr) return std::nullopt;
++        const uint16_t port = pairing_server_start(server, PairingResultCallback, this);
++        if (port == 0) {
++            pairing_server_destroy(server);
++            return std::nullopt;
++        }
++        pairing_server_ = server;
++        return port;
++    }
++
++    std::optional<uint16_t> open_connect_listener(std::string_view bind_address,
++                                                  uint16_t requested_port) override {
++        return mtpadbd_wifi_start_tls_server(std::string(bind_address), requested_port);
++    }
++
++    void close_pairing_listener() noexcept override {
++        PairingServerCtx* server = nullptr;
++        {
++            std::lock_guard<std::mutex> lock(pairing_server_mutex_);
++            server = std::exchange(pairing_server_, nullptr);
++        }
++        if (server != nullptr) pairing_server_destroy(server);
++    }
++
++    void close_connect_listener() noexcept override {
++        mtpadbd_wifi_stop_tls_server();
++    }
++
++    bool publish_pairing_mdns(std::string_view bind_address, uint16_t port) override {
++        const std::string address(bind_address);
++        return mtpadbd_register_adb_secure_pairing_service(address.c_str(), port);
++    }
++
++    bool publish_connect_mdns(std::string_view bind_address, uint16_t port) override {
++        const std::string address(bind_address);
++        return mtpadbd_register_adb_secure_connect_service(address.c_str(), port);
++    }
++
++    void remove_pairing_mdns() noexcept override {
++        mtpadbd_unregister_adb_secure_pairing_service();
++    }
++
++    void remove_connect_mdns() noexcept override {
++        mtpadbd_unregister_adb_secure_connect_service();
++    }
++
++  private:
++    static void EnumeratePublicKeys(void* opaque, mtpadbd_wireless_public_key_visitor visitor,
++                                    void* visitor_opaque) {
++        auto* control = static_cast<WirelessControl*>(opaque);
++        control->for_each_paired_peer([&](std::string_view, std::string_view public_key) {
++            visitor(visitor_opaque, public_key);
++        });
++    }
++
++    static void PairingResultCallback(const PeerInfo* peer_info, void* opaque) {
++        auto* runtime = static_cast<AospWirelessRuntime*>(opaque);
++        std::optional<std::string> public_key;
++        if (peer_info != nullptr && peer_info->type == ADB_RSA_PUB_KEY) {
++            const char* data = reinterpret_cast<const char*>(peer_info->data);
++            const void* terminator = std::memchr(data, '\0', sizeof(peer_info->data));
++            if (terminator != nullptr && data != static_cast<const char*>(terminator)) {
++                public_key.emplace(data, static_cast<const char*>(terminator) - data);
++            }
++        }
++        {
++            std::lock_guard<std::mutex> lock(runtime->result_mutex_);
++            runtime->pairing_results_.push_back(std::move(public_key));
++        }
++        runtime->result_cv_.notify_one();
++    }
++
++    static std::string PeerId(std::string_view public_key) {
++        std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{};
++        SHA256(reinterpret_cast<const uint8_t*>(public_key.data()), public_key.size(), digest.data());
++        static constexpr char kHex[] = "0123456789abcdef";
++        std::string peer_id = "adb-";
++        peer_id.reserve(4 + digest.size() * 2);
++        for (uint8_t byte : digest) {
++            peer_id.push_back(kHex[byte >> 4]);
++            peer_id.push_back(kHex[byte & 0x0f]);
++        }
++        return peer_id;
++    }
++
++    void ProcessPairingResults() {
++        for (;;) {
++            std::optional<std::string> public_key;
++            bool have_result = false;
++            {
++                std::unique_lock<std::mutex> lock(result_mutex_);
++                result_cv_.wait_for(lock, std::chrono::milliseconds(250),
++                                    [this]() { return !pairing_results_.empty(); });
++                if (!pairing_results_.empty()) {
++                    have_result = true;
++                    public_key = std::move(pairing_results_.front());
++                    pairing_results_.pop_front();
++                }
++            }
++            control_->advance_time(WirelessControl::Clock::now());
++            if (!have_result) continue;
++            if (!public_key.has_value()) {
++                control_->advance_time(WirelessControl::Clock::time_point::max());
++                continue;
++            }
++
++            // Destroying the official context from this worker joins the callback
++            // worker. Only after that join may core state accept the new peer.
++            close_pairing_listener();
++            const std::string peer_id = PeerId(*public_key);
++            if (!control_->pairing_succeeded(peer_id, *public_key)) {
++                LOG(WARNING) << "mtpadbd ignored a pairing result that was no longer active";
++            }
++        }
++    }
++
++    WirelessControl* control_ = nullptr;
++    std::mutex pairing_server_mutex_;
++    PairingServerCtx* pairing_server_ = nullptr;
++    std::mutex result_mutex_;
++    std::condition_variable result_cv_;
++    std::deque<std::optional<std::string>> pairing_results_;
++    std::thread result_thread_;
++    bool started_ = false;
++};
++
++}  // namespace
++}  // namespace mtpadb::mtpadbd
++
++void mtpadbd_wireless_runtime_start() {
++    static auto* runtime = new mtpadb::mtpadbd::AospWirelessRuntime;
++    static auto* control = new mtpadb::mtpadbd::WirelessControl(*runtime);
++    runtime->Start(*control);
++}
+diff --git a/daemon/mtpadbd_wireless.h b/daemon/mtpadbd_wireless.h
+new file mode 100644
+index 0000000..aefbe1f
+--- /dev/null
++++ b/daemon/mtpadbd_wireless.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <string_view>
++
++using mtpadbd_wireless_public_key_visitor = bool (*)(void*, std::string_view);
++using mtpadbd_wireless_public_key_enumerator = void (*)(
++        void*, mtpadbd_wireless_public_key_visitor, void*);
++
++void adbd_auth_set_mtpadbd_public_key_enumerator(
++        mtpadbd_wireless_public_key_enumerator enumerator, void* opaque);
++void mtpadbd_wireless_runtime_start();
+diff --git a/pairing_connection/mtpadbd_pairing_server.h b/pairing_connection/mtpadbd_pairing_server.h
+new file mode 100644
+index 0000000..b6c430c
+--- /dev/null
++++ b/pairing_connection/mtpadbd_pairing_server.h
+@@ -0,0 +1,15 @@
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include <adb/pairing/pairing_connection.h>
++#include <adb/pairing/pairing_server.h>
++
++// Project-only constructor compiled into mtpadbd's private static pairing-server
++// target. The public AOSP pairing_server_* ABI remains unchanged.
++PairingServerCtx* mtpadbd_pairing_server_new_no_cert_on_address(const uint8_t* password,
++                                                                size_t password_size,
++                                                                const PeerInfo* peer_info,
++                                                                const char* bind_address,
++                                                                uint16_t port);
+diff --git a/pairing_connection/pairing_server.cpp b/pairing_connection/pairing_server.cpp
+index c974289..a620908 100644
+--- a/pairing_connection/pairing_server.cpp
++++ b/pairing_connection/pairing_server.cpp
+@@ -16,8 +16,13 @@
+ 
+ #include "adb/pairing/pairing_server.h"
+ 
+-#include <sys/epoll.h>
+-#include <sys/eventfd.h>
++#include <arpa/inet.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netdb.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <unistd.h>
+ 
+ #include <atomic>
+ #include <deque>
+@@ -28,7 +33,9 @@
+ #include <tuple>
+ #include <unordered_map>
+ #include <variant>
+-#include <vector>
++#include <cstring>
++#include <string>
++#include <utility>
+ 
+ #include <adb/crypto/rsa_2048_key.h>
+ #include <adb/crypto/x509_generator.h>
+@@ -39,6 +46,7 @@
+ #include <android-base/unique_fd.h>
+ #include <cutils/sockets.h>
+ 
++#include "mtpadbd_pairing_server.h"
+ #include "internal/constants.h"
+ 
+ using android::base::ScopedLockAssertion;
+@@ -57,7 +65,8 @@ struct PairingServerCtx {
+ 
+     // All parameters must be non-empty.
+     explicit PairingServerCtx(const Data& pswd, const PeerInfo& peer_info, const Data& cert,
+-                              const Data& priv_key, uint16_t port);
++                              const Data& priv_key, uint16_t port,
++                              std::string bind_address = {});
+ 
+     // Starts the pairing server. This call is non-blocking. Upon completion,
+     // if the pairing was successful, then |cb| will be called with the PublicKeyHeader
+@@ -125,8 +134,9 @@ struct PairingServerCtx {
+     Data pswd_;
+     PeerInfo peer_info_;
+     Data cert_;
+     Data priv_key_;
+     uint16_t port_;
++    std::string bind_address_;
+ 
+     pairing_server_result_cb cb_;
+     void* opaque_ = nullptr;
+@@ -150,9 +160,90 @@ PairingServerCtx::ConnectionPtr PairingServerCtx::CreatePairingConnection(const
+                                                        priv_key.size()));
+ }
+ 
++namespace {
++
++int mtpadbd_bound_server(const std::string& address, uint16_t port) {
++    addrinfo hints{};
++    hints.ai_family = AF_UNSPEC;
++    hints.ai_socktype = SOCK_STREAM;
++    hints.ai_protocol = IPPROTO_TCP;
++    hints.ai_flags = AI_NUMERICHOST;
++    addrinfo* addresses = nullptr;
++    if (getaddrinfo(address.c_str(), nullptr, &hints, &addresses) != 0) return -1;
++
++    int server_fd = -1;
++    for (addrinfo* item = addresses; item != nullptr && server_fd < 0; item = item->ai_next) {
++        sockaddr_storage bound_address{};
++        if (item->ai_addrlen > sizeof(bound_address)) continue;
++        memcpy(&bound_address, item->ai_addr, item->ai_addrlen);
++        if (bound_address.ss_family == AF_INET) {
++            reinterpret_cast<sockaddr_in*>(&bound_address)->sin_port = htons(port);
++        } else if (bound_address.ss_family == AF_INET6) {
++            auto* address6 = reinterpret_cast<sockaddr_in6*>(&bound_address);
++            address6->sin6_port = htons(port);
++            if (IN6_IS_ADDR_LINKLOCAL(&address6->sin6_addr) && address6->sin6_scope_id == 0) {
++                ifaddrs* interfaces = nullptr;
++                if (getifaddrs(&interfaces) != 0) continue;
++                for (ifaddrs* interface = interfaces; interface != nullptr;
++                     interface = interface->ifa_next) {
++                    if (interface->ifa_addr == nullptr ||
++                        interface->ifa_addr->sa_family != AF_INET6) {
++                        continue;
++                    }
++                    auto* interface_address =
++                            reinterpret_cast<sockaddr_in6*>(interface->ifa_addr);
++                    if (memcmp(&interface_address->sin6_addr, &address6->sin6_addr,
++                               sizeof(address6->sin6_addr)) == 0) {
++                        address6->sin6_scope_id = if_nametoindex(interface->ifa_name);
++                        break;
++                    }
++                }
++                freeifaddrs(interfaces);
++                if (address6->sin6_scope_id == 0) continue;
++            }
++        } else {
++            continue;
++        }
++
++        int fd = socket(item->ai_family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
++        if (fd < 0) continue;
++        int enabled = 1;
++        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
++        if (item->ai_family == AF_INET6 &&
++            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &enabled, sizeof(enabled)) != 0) {
++            close(fd);
++            continue;
++        }
++        if (bind(fd, reinterpret_cast<sockaddr*>(&bound_address), item->ai_addrlen) == 0 &&
++            listen(fd, 4) == 0) {
++            server_fd = fd;
++        } else {
++            close(fd);
++        }
++    }
++    freeaddrinfo(addresses);
++    return server_fd;
++}
++
++uint16_t mtpadbd_local_port(int fd) {
++    sockaddr_storage address{};
++    socklen_t size = sizeof(address);
++    if (getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) != 0) return 0;
++    if (address.ss_family == AF_INET) return ntohs(reinterpret_cast<sockaddr_in*>(&address)->sin_port);
++    if (address.ss_family == AF_INET6) return ntohs(reinterpret_cast<sockaddr_in6*>(&address)->sin6_port);
++    return 0;
++}
++
++}  // namespace
++
+ PairingServerCtx::PairingServerCtx(const Data& pswd, const PeerInfo& peer_info, const Data& cert,
+-                                   const Data& priv_key, uint16_t port)
+-    : pswd_(pswd), peer_info_(peer_info), cert_(cert), priv_key_(priv_key), port_(port) {
++                                   const Data& priv_key, uint16_t port, std::string bind_address)
++    : pswd_(pswd),
++      peer_info_(peer_info),
++      cert_(cert),
++      priv_key_(priv_key),
++      port_(port),
++      bind_address_(std::move(bind_address)) {
+     CHECK(!pswd_.empty() && !cert_.empty() && !priv_key_.empty());
+ }
+ 
+@@ -227,7 +318,8 @@ uint16_t PairingServerCtx::SetupServer() {
+         return 0;
+     }
+ 
+-    server_fd_.reset(socket_inaddr_any_server(port_, SOCK_STREAM));
++    server_fd_.reset(bind_address_.empty() ? socket_inaddr_any_server(port_, SOCK_STREAM)
++                                           : mtpadbd_bound_server(bind_address_, port_));
+     if (server_fd_.get() == -1) {
+         PLOG(ERROR) << "Failed to start pairing connection server";
+         return 0;
+@@ -235,7 +327,8 @@ uint16_t PairingServerCtx::SetupServer() {
+ 
+     StartConnectionEventsThread();
+     StartServerThread();
+-    int port = socket_get_local_port(server_fd_.get());
++    const int port = bind_address_.empty() ? socket_get_local_port(server_fd_.get())
++                                           : mtpadbd_local_port(server_fd_.get());
+     return (port <= 0 ? 0 : port);
+ }
+ 
+@@ -454,6 +547,25 @@ PairingServerCtx* pairing_server_new_no_cert(const uint8_t* pswd, size_t pswd_le
+                               port);
+ }
+ 
++PairingServerCtx* mtpadbd_pairing_server_new_no_cert_on_address(
++        const uint8_t* password, size_t password_size, const PeerInfo* peer_info,
++        const char* bind_address, uint16_t port) {
++    CHECK(password != nullptr);
++    CHECK_GT(password_size, 0U);
++    CHECK(peer_info != nullptr);
++    CHECK(bind_address != nullptr);
++    CHECK_NE(bind_address[0], '\0');
++    auto rsa_2048 = CreateRSA2048Key();
++    auto x509_cert = GenerateX509Certificate(rsa_2048->GetEvpPkey());
++    std::string private_key_pem = Key::ToPEMString(rsa_2048->GetEvpPkey());
++    std::string certificate_pem = X509ToPEMString(x509_cert.get());
++    std::vector<uint8_t> password_data(password, password + password_size);
++    std::vector<uint8_t> certificate_data(certificate_pem.begin(), certificate_pem.end());
++    std::vector<uint8_t> private_key_data(private_key_pem.begin(), private_key_pem.end());
++    return new PairingServerCtx(password_data, *peer_info, certificate_data, private_key_data,
++                                port, bind_address);
++}
++
+ void pairing_server_destroy(PairingServerCtx* ctx) {
+     CHECK(ctx);
+     delete ctx;

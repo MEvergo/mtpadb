@@ -45,11 +45,13 @@ void require_hmac_key_size(std::size_t size) {
     }
 }
 
+#if !defined(OPENSSL_IS_BORINGSSL)
 void require_openssl_input_size(std::size_t size) {
     if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::length_error("AEAD input is too large");
     }
 }
+#endif
 
 void require_aead_output_size(std::size_t size) {
     if (size > Bytes{}.max_size() - kPoly1305TagBytes) {

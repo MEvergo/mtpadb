@@ -1,0 +1,161 @@
+name: Android 11 module CI
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag for the manual GitHub Release (for example v1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install host test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake build-essential libssl-dev zip unzip
+
+      - name: Build and run C++ tests
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/mtpadb-host-build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/mtpadb-host-build" --parallel 2
+          ctest --test-dir "$RUNNER_TEMP/mtpadb-host-build" --output-on-failure
+
+      - name: Test KernelSU packaging layout
+        run: bash tests/android/kernelsu_module_package_test.sh
+
+  android-module:
+    name: Build Android 11 KernelSU module
+    needs: host-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      AOSP_TAG: android-11.0.0_r48
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reclaim runner space for AOSP
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android/sdk \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/share/swift
+          df -h /
+
+      - name: Install Android build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            bc bison build-essential curl file flex g++-multilib gcc-multilib git \
+            gperf lib32ncurses-dev lib32z1-dev libelf-dev libxml2-utils lzop \
+            make python3 repo rsync unzip zip zlib1g-dev
+
+      - name: Sync pinned AOSP source
+        run: |
+          ANDROID_BUILD_TOP="$RUNNER_TEMP/aosp-android11-r48"
+          echo "ANDROID_BUILD_TOP=$ANDROID_BUILD_TOP" >> "$GITHUB_ENV"
+          mkdir -p "$ANDROID_BUILD_TOP"
+          cd "$ANDROID_BUILD_TOP"
+          repo init \
+            --manifest-url https://android.googlesource.com/platform/manifest \
+            --manifest-branch "$AOSP_TAG" \
+            --manifest-depth=1 \
+            --depth=1 \
+            --partial-clone
+          mkdir -p .repo/local_manifests
+          cp "$GITHUB_WORKSPACE/android/ci/aosp11-local-manifest.xml" \
+            .repo/local_manifests/mtpadb.xml
+          repo sync --jobs=2 --no-clone-bundle --fail-fast
+
+      - name: Fetch only the Android 11 Clang toolchain
+        run: |
+          clang_repo="$ANDROID_BUILD_TOP/prebuilts/clang/host/linux-x86"
+          mkdir -p "$(dirname "$clang_repo")"
+          git clone --filter=blob:none --depth=1 --no-checkout \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            "$clang_repo"
+          git -C "$clang_repo" sparse-checkout init --cone
+          git -C "$clang_repo" sparse-checkout set \
+            clang-r383902b1 clang-stable llvm-binutils-stable profiles
+          git -C "$clang_repo" fetch --depth=1 origin "refs/tags/$AOSP_TAG"
+          git -C "$clang_repo" checkout --detach FETCH_HEAD
+
+      - name: Build and package AArch64 Android daemons
+        shell: bash
+        run: |
+          set -eo pipefail
+          export ANDROID_BUILD_TOP
+          "$GITHUB_WORKSPACE/android/deploy/prepare-aosp.sh" android-11
+          cd "$ANDROID_BUILD_TOP"
+          source build/envsetup.sh
+          lunch aosp_arm64-eng
+          m -j2 mtpadbd mtprpcd mtpadbctl
+
+          mkdir -p "$RUNNER_TEMP/dist"
+          "$GITHUB_WORKSPACE/android/kernelsu/package-module.sh" \
+            --product-out "$ANDROID_PRODUCT_OUT" \
+            --output "$RUNNER_TEMP/dist/mtpadb-kernelsu.zip"
+          unzip -tq "$RUNNER_TEMP/dist/mtpadb-kernelsu.zip"
+
+          extracted="$RUNNER_TEMP/module-check"
+          mkdir -p "$extracted"
+          unzip -q "$RUNNER_TEMP/dist/mtpadb-kernelsu.zip" -d "$extracted"
+          for binary in mtpadbd mtprpcd mtpadbctl; do
+            file "$extracted/bin/$binary"
+            file "$extracted/bin/$binary" | grep -q 'ELF 64-bit LSB.*ARM aarch64'
+          done
+          cd "$RUNNER_TEMP/dist"
+          sha256sum mtpadb-kernelsu.zip > mtpadb-kernelsu.zip.sha256
+
+      - name: Upload installable module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtpadb-kernelsu
+          path: |
+            ${{ runner.temp }}/dist/mtpadb-kernelsu.zip
+            ${{ runner.temp }}/dist/mtpadb-kernelsu.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish manual GitHub Release
+    if: github.event_name == 'workflow_dispatch'
+    needs: android-module
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download built module artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mtpadb-kernelsu
+          path: ${{ runner.temp }}/release
+
+      - name: Create release and attach module
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::release_tag must be a simple Git tag name"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/release/mtpadb-kernelsu.zip" \
+            "$RUNNER_TEMP/release/mtpadb-kernelsu.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --generate-notes

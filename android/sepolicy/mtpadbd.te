@@ -1,0 +1,32 @@
+type mtpadbd, domain;
+typeattribute mtpadbd coredomain;
+type mtpadbd_exec, exec_type, file_type, system_file_type;
+init_daemon_domain(mtpadbd)
+
+type mtpadbd_control_socket, file_type, coredomain_socket;
+type mtpadb_wireless_data_file, file_type, data_file_type, core_data_file_type;
+type_transition mtpadbd adb_data_file:dir mtpadb_wireless_data_file "wireless";
+type_transition mtpadbd mtpadb_wireless_data_file:dir mtpadb_wireless_data_file;
+type_transition mtpadbd mtpadb_wireless_data_file:file mtpadb_wireless_data_file;
+
+allow mtpadbd mtpadbd_control_socket:sock_file { getattr read write };
+allow mtpadbd self:unix_stream_socket { accept connect create getattr getopt ioctl listen read setopt shutdown write };
+unix_socket_connect(shell, mtpadbd_control, mtpadbd);
+unix_socket_connect(mtpadbd, mtprpcd, mtprpcd);
+unix_socket_connect(mtpadbd, mdnsd, mdnsd);
+
+allow mtpadbd system_data_file:dir { getattr open search };
+allow mtpadbd misc_data_file:dir { getattr open search };
+allow mtpadbd adb_data_file:dir { getattr open search };
+allow mtpadbd mtpadb_wireless_data_file:dir { create_dir_perms r_dir_perms };
+allow mtpadbd mtpadb_wireless_data_file:file { create_file_perms r_file_perms rename unlink };
+
+allow mtpadbd self:tcp_socket { accept bind create getattr getopt ioctl listen read setopt shutdown write };
+allow mtpadbd port_type:tcp_socket name_bind;
+allow mtpadbd self:netlink_route_socket { create bind getattr read write nlmsg_read nlmsg_write };
+
+get_prop(mtpadbd, init_service_status_prop);
+get_prop(mtpadbd, serialno_prop);
+get_prop(mtpadbd, mtpadbd_config_prop);
+set_prop(mtpadbd, mtpadbd_config_prop);
+set_prop(mtpadbd, ctl_mdnsd_prop);

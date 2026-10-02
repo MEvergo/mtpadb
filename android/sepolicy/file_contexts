@@ -1,0 +1,6 @@
+/system/bin/mtpadbd                 u:object_r:mtpadbd_exec:s0
+/system/bin/mtprpcd                  u:object_r:mtprpcd_exec:s0
+/dev/socket/mtpadbd-control          u:object_r:mtpadbd_control_socket:s0
+/dev/socket/mtprpcd-adb               u:object_r:mtprpcd_socket:s0
+/data/adb/mtpadb(/.*)?               u:object_r:mtpadb_rpc_data_file:s0
+/data/misc/adb/mtpadb/wireless(/.*)? u:object_r:mtpadb_wireless_data_file:s0

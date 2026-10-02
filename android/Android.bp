@@ -8,4 +8,5 @@ cc_binary {
     static_libs: ["libmtprpc_protocol"],
     shared_libs: ["libcutils", "libcrypto"],
     cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
 }

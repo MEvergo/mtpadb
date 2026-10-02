@@ -12,3 +12,62 @@ cc_library_static {
         "//packages/modules/adb",
     ],
 }
+
+cc_library_static {
+    name: "libmtpadbd_wireless_control",
+    srcs: ["wireless_control.cpp"],
+    export_include_dirs: ["."],
+    static_libs: ["libc++fs"],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+    ],
+    visibility: [
+        "//system/core/adb",
+        "//system/core/adb:__subpackages__",
+        "//packages/modules/adb",
+        "//packages/modules/adb:__subpackages__",
+    ],
+}
+
+cc_library_static {
+    name: "libmtpadbd_wireless_control_protocol",
+    srcs: ["wireless_control_protocol.cpp"],
+    export_include_dirs: ["."],
+    cpp_std: "c++17",
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+    ],
+    visibility: [
+        "//system/core/adb",
+        "//system/core/adb:__subpackages__",
+        "//packages/modules/adb",
+        "//packages/modules/adb:__subpackages__",
+        "//external/mtpadb/android/mtpadbctl",
+    ],
+}
+
+cc_library_static {
+    name: "libmtpadbd_wireless_control_server",
+    srcs: ["control_server.cpp"],
+    export_include_dirs: ["."],
+    static_libs: [
+        "libmtpadbd_wireless_control",
+        "libmtpadbd_wireless_control_protocol",
+    ],
+    shared_libs: ["libcrypto"],
+    cpp_std: "c++17",
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.adbd",
+    ],
+    visibility: [
+        "//system/core/adb",
+        "//system/core/adb:__subpackages__",
+        "//packages/modules/adb",
+        "//packages/modules/adb:__subpackages__",
+    ],
+}

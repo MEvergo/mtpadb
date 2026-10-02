@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
+#include <future>
+
 #include <iostream>
 #include <optional>
 #include <poll.h>
@@ -226,8 +228,10 @@ public:
             if (flags < 0 || fcntl(client_fd_, F_SETFL, flags | O_NONBLOCK) != 0) {
                 throw std::runtime_error("could not make test socket nonblocking");
             }
+            worker_started_future_ = worker_started_promise_.get_future();
             worker_ = std::thread([this, service_fd, handshake_timeout] {
                 try {
+                    worker_started_promise_.set_value(Clock::now());
                     if (handshake_timeout) {
                         serve_connection(service_fd, device_id_, psk_, *handshake_timeout);
                     } else {
@@ -258,12 +262,15 @@ public:
     }
 
     int fd() const noexcept { return client_fd_; }
+    Deadline worker_started_at() { return worker_started_future_.get(); }
 
 private:
     Bytes psk_;
     DeviceId device_id_{};
     int client_fd_ = -1;
     std::thread worker_;
+    std::promise<Deadline> worker_started_promise_;
+    std::future<Deadline> worker_started_future_;
 };
 
 Session authenticate(SocketService& service, const Bytes& host_psk) {
@@ -357,15 +364,16 @@ void expect_closed_by(SocketService& service, Deadline deadline) {
 void test_idle_peer_is_closed_by_handshake_deadline() {
     const Bytes psk = test_psk();
     SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
-    const Deadline deadline =
-        Clock::now() + kHandshakeTestTimeout + kHandshakeDeadlineSlack;
+    const Deadline deadline = service.worker_started_at() + kHandshakeTestTimeout +
+                              kHandshakeDeadlineSlack;
     expect_closed_by(service, deadline);
 }
 
 void test_partial_hello_progress_does_not_reset_handshake_deadline() {
     const Bytes psk = test_psk();
     SocketService service(psk, 0, 0, 0, 0, kHandshakeTestTimeout);
-    const Deadline handshake_deadline = Clock::now() + kHandshakeTestTimeout;
+    const Deadline handshake_deadline =
+            service.worker_started_at() + kHandshakeTestTimeout;
     const Deadline close_deadline = handshake_deadline + kHandshakeDeadlineSlack;
     Frame hello;
     hello.type = FrameType::HELLO;

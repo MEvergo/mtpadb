@@ -1,0 +1,18 @@
+[Unit]
+Description=MTPADB virtual ADB USB gadget (dummy_hcd only)
+After=local-fs.target
+ConditionPathIsDirectory=/sys/kernel/config
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/modprobe dummy_hcd
+ExecStartPre=/usr/bin/modprobe libcomposite
+ExecStartPre=/usr/bin/modprobe usb_f_fs
+ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/mtpadb-gadgetd run --config @CMAKE_INSTALL_FULL_SYSCONFDIR@/mtpadb/host.conf
+ExecStopPost=@CMAKE_INSTALL_FULL_SBINDIR@/mtpadb-gadgetd cleanup
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

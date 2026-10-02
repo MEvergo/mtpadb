@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+binary=${MTPADB_GADGETD:-$script_dir/mtpadb-gadgetd}
+exec "$binary" cleanup

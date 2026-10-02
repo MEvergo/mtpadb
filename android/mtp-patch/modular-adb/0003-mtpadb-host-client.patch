@@ -1,0 +1,69 @@
+diff --git a/Android.bp b/Android.bp
+--- a/Android.bp
++++ b/Android.bp
+@@ -519,8 +519,33 @@
+ cc_binary_host {
+     name: "adb",
+     defaults: ["adb_binary_host_defaults"],
+ }
+ 
++cc_binary_host {
++    name: "mtpadb",
++    defaults: ["adb_defaults"],
++    stl: "libc++_static",
++    cpp_std: "c++17",
++    srcs: [
++        "client/adb_client.cpp",
++        "//external/mtpadb:mtpadb_host_main_srcs",
++    ],
++    cflags: ["-DMTPADB_HOST_CLIENT"],
++    static_libs: [
++        "libadb_host",
++        "libmtpadb_rpc_client",
++    ],
++    shared_libs: [],
++    target: {
++        darwin: {
++            enabled: false,
++        },
++        windows: {
++            enabled: false,
++        },
++    },
++}
++
+ cc_binary_host {
+     name: "adb_asan",
+     defaults: ["adb_binary_host_defaults"],
+diff --git a/client/adb_client.cpp b/client/adb_client.cpp
+--- a/client/adb_client.cpp
++++ b/client/adb_client.cpp
+@@ -254,4 +254,24 @@
+ static bool __adb_check_server_version(std::string* error) {
+     unique_fd fd(_adb_connect("host:version", nullptr, error));
+ 
++#if defined(MTPADB_HOST_CLIENT)
++    if (fd < 0) {
++        if (error->empty()) *error = "cannot connect to local ADB server";
++        return false;
++    }
++
++    int version = 0;
++    std::string version_string;
++    if (!ReadProtocolString(fd, &version_string, error)) return false;
++    ReadOrderlyShutdown(fd);
++    if (sscanf(version_string.c_str(), "%04x", &version) != 1) {
++        *error = "cannot parse local ADB server version";
++        return false;
++    }
++    if (version != ADB_SERVER_VERSION) {
++        *error = "local ADB server version does not match mtpadb; refusing to restart it";
++        return false;
++    }
++    return true;
++#else
+     bool local = is_local_socket_spec(__adb_server_socket_spec);
+@@ -340,2 +360,3 @@
+     return true;
++#endif
+ }

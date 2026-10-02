@@ -1,5 +1,6 @@
 cc_library_static {
     name: "libmtprpc_protocol",
+    host_supported: true,
     srcs: [
         "src/mtprpc_protocol.cpp",
         "src/mtprpc_crypto.cpp",
@@ -7,5 +8,13 @@ cc_library_static {
     ],
     export_include_dirs: ["include"],
     cpp_std: "c++17",
-    shared_libs: ["libcrypto"],
+    cppflags: ["-fexceptions"],
+    target: {
+        android: {
+            shared_libs: ["libcrypto"],
+        },
+        host: {
+            static_libs: ["libcrypto"],
+        },
+    },
 }

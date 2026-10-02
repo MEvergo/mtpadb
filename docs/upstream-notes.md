@@ -38,19 +38,25 @@ No Android device or target ROM source is present, so OEM-specific operation col
 
 ## AOSP `mtpadbd` integration pins
 
-Inspected the exact pinned AOSP sources and target definitions before preparing the branch-specific patches:
+The project patches are based on these exact source revisions:
 
-- Android 11 baseline: `platform/system/core`, tag `android-11.0.0_r48`, commit [`348efca472d810d3152568913da41a081893a4e3`](https://android.googlesource.com/platform/system/core/+/refs/tags/android-11.0.0_r48/). The ADB source path is `adb/`; `adb/Android.bp` defines the existing `adbd` binary from `daemon/main.cpp`, and `adb/daemon/main.cpp` is its entry path.
-- Modular ADB: `platform/packages/modules/adb` at commit [`1cf2f017d312f73b3dc53bda85ef2610e35a80e9`](https://android.googlesource.com/platform/packages/modules/adb/+/1cf2f017d312f73b3dc53bda85ef2610e35a80e9/). The root `Android.bp` defines `adbd_binary_defaults` and `adbd` using `daemon/main.cpp`.
+- Android 11 baseline: [`platform/system/core`, tag `android-11.0.0_r48`, commit `348efca472d810d3152568913da41a081893a4e3`](https://android.googlesource.com/platform/system/core/+/refs/tags/android-11.0.0_r48/); ADB source is under `adb/`.
+- Modular ADB: [`platform/packages/modules/adb`, commit `1cf2f017d312f73b3dc53bda85ef2610e35a80e9`](https://android.googlesource.com/platform/packages/modules/adb/+/1cf2f017d312f73b3dc53bda85ef2610e35a80e9/).
 
-Both pinned daemon entry paths call `adbd_auth_init()`, which initializes stock ADB auth and invokes `adbd_wifi_init()`; the Android implementation starts a property observer for `persist.adb.tls_server.enable`. The AOSP startup path also starts USB ADB when FunctionFS is available and otherwise honors legacy TCP properties or defaults to TCP/VSOCK, then initializes mDNS with those addresses. The Android 11 `drop_privileges()` path also installs the local ADB smart-socket listener when running with privileges. The `MTPADB_PROJECT_DAEMON`-only mode added by these patches is set before `adbd_main()`: it skips stock auth/property-observer initialization and all boot-time USB, TCP/VSOCK, smart-socket, and mDNS listener startup while retaining AOSP privilege dropping, service dispatch, and the branch's AOSP TLS/pairing dependencies. The ordinary `adbd` target does not receive the project define and keeps its existing behavior. Pairing mDNS remains owned by `mtpadbd` through the pinned AOSP mDNS implementation when a later root-only project control path explicitly enables wireless mode.
+`android/deploy/prepare-aosp.sh {android-11|modular-adb}` exposes the current checkout at `$ANDROID_BUILD_TOP/external/mtpadb` using a symlink, then calls `android/mtp-patch/apply.sh`. The patch script verifies the selected repository path and exact commit, preflights the complete numbered patch series, applies it atomically through a temporary index, and recognizes a fully applied series on repeat. A partial or conflicting patch state is rejected. This flow does not copy project files or use `adb push`.
 
-The project checkout path for these integrations is `$ANDROID_BUILD_TOP/external/mtpadb`. Apply one adapter from that checkout with `android/mtp-patch/apply.sh android-11` or `android/mtp-patch/apply.sh modular-adb`; the script checks the selected source repository path and exact commit, checks every patch before applying the series, and reports fully applied patches on re-run. The patches add only the `mtpadbd` binary and its target-specific entry mode; they do not add unresolved project-module dependencies or start `/system/bin/adbd`.
+The patch series add a distinct `mtpadbd` Soong target and `mtpadb:rpc` ADB service route, explicit root-controlled pairing/TLS startup using the pinned AOSP pairing/TLS/mDNS implementation, and a Linux AOSP host target named `mtpadb`. Project `mtprpcd` and `mtpadbctl` are real Soong modules. The `mtpadbd` entry path bypasses stock boot listener/auth initialization; AOSP UID/GID, capability, and SELinux privilege-drop operations plus standard service dispatch remain intact. It neither replaces nor starts `/system/bin/adbd`.
 
-Recorded Android build commands (not run in this task):
+The project mDNS helper uses `persist.mtpadb.wifi.guid` and the project property type instead of changing stock `persist.adb.wifi.guid`/`adbd_config_prop`. Wireless mode binds only the explicit local numeric IP, exposes separate dynamic pairing and TLS connection endpoints, and requires effective UID 0 to write the root-owned peer store. The init control socket is local and root-only; the `mtprpcd-adb` socket is SELinux-restricted to the project daemon.
+
+The target product includes `external/mtpadb/android/deploy/mtpadb_product.mk`, which packages `mtpadbd`, `mtprpcd`, and `mtpadbctl` and adds project policy through `PRODUCT_PRIVATE_SEPOLICY_DIRS`. The source build command is:
 
 ```sh
-source build/envsetup.sh && lunch aosp_arm64-eng && m mtpadbd
+source build/envsetup.sh
+lunch aosp_arm64-eng
+m mtpadbd mtprpcd mtpadbctl mtpadb
 ```
 
-Run the command in a full AOSP checkout after applying each corresponding patch. The Android Soong build and device/runtime checks were not run under the controller's task constraint; the project workspace has no full Android build tree or Android device. `mtprpcd` and `mtpadbctl` do not yet have real Soong modules and are deferred to the later implementation tasks.
+This command was not run: the workspace has no `ANDROID_BUILD_TOP` or full AOSP/Soong tree. `sepolicy_tests`, file-context validation, init service startup, AVC review, stock `adb pair`/`adb connect`, mDNS, and Android-device behavior were also not run. The Linux CMake/CTest suite and the pinned patch-application/idempotence smoke checks do not substitute for those Android checks. The supplied `tests/adb/mtpadb_host_integration.sh` also requires a built AOSP host target, stock local ADB server, and paired target; it was not run here.
+
+The Linux Stage A path remains independent: it uses only `dummy_hcd` for USB enumeration and does not implement ADB `CNXN`. The MTPX RPC operations currently exercised through the ADB service are `ping` and binary `echo`; no arbitrary physical USB-MTP command bridge is claimed.

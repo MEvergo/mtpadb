@@ -1,0 +1,57 @@
+diff --git a/adb/Android.bp b/adb/Android.bp
+--- a/adb/Android.bp
++++ b/adb/Android.bp
+@@ -536,1 +536,4 @@
+-    apex_available: ["com.android.adbd"],
++    apex_available: [
++        "//apex_available:platform",
++        "com.android.adbd",
++    ],
+diff --git a/adb/crypto/Android.bp b/adb/crypto/Android.bp
+--- a/adb/crypto/Android.bp
++++ b/adb/crypto/Android.bp
+@@ -62,4 +62,5 @@ cc_library {
+     apex_available: [
++        "//apex_available:platform",
+         "com.android.adbd",
+         "test_com.android.adbd",
+     ],
+diff --git a/adb/pairing_auth/Android.bp b/adb/pairing_auth/Android.bp
+--- a/adb/pairing_auth/Android.bp
++++ b/adb/pairing_auth/Android.bp
+@@ -65,3 +65,4 @@ cc_library {
+     apex_available: [
++        "//apex_available:platform",
+         "com.android.adbd",
+     ],
+diff --git a/adb/pairing_connection/Android.bp b/adb/pairing_connection/Android.bp
+--- a/adb/pairing_connection/Android.bp
++++ b/adb/pairing_connection/Android.bp
+@@ -48,3 +48,4 @@ cc_defaults {
+     apex_available: [
++        "//apex_available:platform",
+         "com.android.adbd",
+     ],
+@@ -75,3 +76,4 @@ cc_library {
+     apex_available: [
++        "//apex_available:platform",
+         "com.android.adbd",
+     ],
+diff --git a/adb/proto/Android.bp b/adb/proto/Android.bp
+--- a/adb/proto/Android.bp
++++ b/adb/proto/Android.bp
+@@ -59,4 +59,5 @@ cc_library {
+     apex_available: [
++        "//apex_available:platform",
+         "com.android.adbd",
+         "test_com.android.adbd",
+     ],
+diff --git a/adb/tls/Android.bp b/adb/tls/Android.bp
+--- a/adb/tls/Android.bp
++++ b/adb/tls/Android.bp
+@@ -58,4 +58,5 @@ cc_library {
+     apex_available: [
++        "//apex_available:platform",
+         "com.android.adbd",
+         "test_com.android.adbd",
+     ],

@@ -8,3 +8,34 @@ filegroup {
         "//packages/modules/adb",
     ],
 }
+
+
+filegroup {
+    name: "mtpadb_host_main_srcs",
+    srcs: ["linux/adb/mtpadb.cpp"],
+    visibility: [
+        "//system/core/adb",
+        "//packages/modules/adb",
+    ],
+}
+
+cc_library_host_static {
+    name: "libmtpadb_rpc_client",
+    srcs: ["linux/adb/rpc_client.cpp"],
+    export_include_dirs: ["linux/adb"],
+    static_libs: ["libmtprpc_protocol", "libcrypto"],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    target: {
+        darwin: {
+            enabled: false,
+        },
+        windows: {
+            enabled: false,
+        },
+    },
+    visibility: [
+        "//system/core/adb",
+        "//packages/modules/adb",
+    ],
+}

@@ -1,0 +1,7 @@
+cc_binary {
+    name: "mtpadbctl",
+    srcs: ["main.cpp"],
+    static_libs: ["libmtpadbd_wireless_control_protocol"],
+    shared_libs: ["libcrypto"],
+    cpp_std: "c++17",
+}

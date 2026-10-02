@@ -53,4 +53,28 @@ if(BUILD_TESTING)
     target_link_libraries(mtpadbd_rpc_connector_test PRIVATE Threads::Threads)
     add_test(NAME mtpadbd_rpc_connector_test COMMAND mtpadbd_rpc_connector_test)
     set_tests_properties(mtpadbd_rpc_connector_test PROPERTIES TIMEOUT 15)
+    add_executable(wireless_control_test
+        ${PROJECT_SOURCE_DIR}/android/mtpadbd/wireless_control.cpp
+        ${PROJECT_SOURCE_DIR}/tests/adb/wireless_control_test.cpp
+    )
+    target_include_directories(wireless_control_test
+        PRIVATE ${PROJECT_SOURCE_DIR}/android
+    )
+    target_compile_features(wireless_control_test PRIVATE cxx_std_17)
+    target_link_libraries(wireless_control_test PRIVATE Threads::Threads)
+    add_test(NAME wireless_control_test COMMAND wireless_control_test)
+    set_tests_properties(wireless_control_test PROPERTIES TIMEOUT 15)
+    add_executable(wireless_control_server_test
+        ${PROJECT_SOURCE_DIR}/android/mtpadbd/control_server.cpp
+        ${PROJECT_SOURCE_DIR}/android/mtpadbd/wireless_control.cpp
+        ${PROJECT_SOURCE_DIR}/android/mtpadbd/wireless_control_protocol.cpp
+        ${PROJECT_SOURCE_DIR}/tests/adb/wireless_control_server_test.cpp
+    )
+    target_include_directories(wireless_control_server_test
+        PRIVATE ${PROJECT_SOURCE_DIR}/android
+    )
+    target_compile_features(wireless_control_server_test PRIVATE cxx_std_17)
+    target_link_libraries(wireless_control_server_test PRIVATE OpenSSL::Crypto Threads::Threads)
+    add_test(NAME wireless_control_server_test COMMAND wireless_control_server_test)
+    set_tests_properties(wireless_control_server_test PROPERTIES TIMEOUT 15)
 endif()

@@ -1,0 +1,23 @@
+on post-fs-data
+    mkdir /data/misc/adb/mtpadb 0700 root root
+    mkdir /data/misc/adb/mtpadb/wireless 0700 root root
+
+service mtpadb_ksu_adbd /data/adb/modules/mtpadb/bin/mtpadbd
+    class main
+    user root
+    group root
+    socket mtpadbd-control stream 0600 root root
+    disabled
+    seclabel u:r:ksu:s0
+
+service mtpadb_ksu_rpcd /data/adb/modules/mtpadb/bin/mtprpcd
+    class main
+    user root
+    group root
+    socket mtprpcd-adb stream 0660 root shell
+    disabled
+    oneshot
+    seclabel u:r:ksu:s0
+
+on property:sys.boot_completed=1
+    start mtpadb_ksu_adbd

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eo pipefail
+export LC_ALL=C
 
 fail() {
     printf 'apply.sh: error: %s\n' "$*" >&2
@@ -59,36 +60,57 @@ shopt -s nullglob
 patches=("$patch_dir"/*.patch)
 [[ ${#patches[@]} -gt 0 ]] || fail "no patch files found in $patch_dir"
 
-declare -a pending=()
-declare -a applied=()
-declare -a invalid=()
+declare -a touched_paths=()
 for patch in "${patches[@]}"; do
-    if git -C "$adb_repo" apply --check "$patch" >/dev/null 2>&1; then
-        pending+=("$patch")
-    elif git -C "$adb_repo" apply --reverse --check "$patch" >/dev/null 2>&1; then
-        applied+=("$patch")
-    else
-        invalid+=("$patch")
+    while IFS=$'\t' read -r _ _ path; do
+        [[ -n "${path:-}" ]] && touched_paths+=("$path")
+    done < <(git -C "$adb_repo" apply --numstat "$patch")
+done
+
+simulation_dir=$(mktemp -d)
+temporary_index=
+trap 'rm -rf -- "$simulation_dir"; [[ -z "$temporary_index" ]] || rm -f -- "$temporary_index"' EXIT
+for path in "${touched_paths[@]}"; do
+    mkdir -p "$simulation_dir/$(dirname -- "$path")"
+    if [[ -e "$adb_repo/$path" || -L "$adb_repo/$path" ]]; then
+        cp -a -- "$adb_repo/$path" "$simulation_dir/$path"
     fi
 done
 
-if [[ ${#invalid[@]} -gt 0 ]]; then
-    for patch in "${invalid[@]}"; do
-        printf 'apply.sh: patch does not cleanly apply or reverse: %s\n' "$(basename -- "$patch")" >&2
-    done
-    fail 'no files changed; resolve the patch/source mismatch before retrying'
-fi
+all_applied=true
+for ((index = ${#patches[@]} - 1; index >= 0; index--)); do
+    patch=${patches[index]}
+    if ! (cd -- "$simulation_dir" && git apply --reverse --check "$patch") >/dev/null 2>&1; then
+        all_applied=false
+        break
+    fi
+    (cd -- "$simulation_dir" && git apply --reverse "$patch")
+done
 
-if [[ ${#pending[@]} -gt 0 && ${#applied[@]} -gt 0 ]]; then
-    fail 'patch series is only partially applied; no files changed, restore the pinned source and apply the complete series'
-fi
-
-if [[ ${#applied[@]} -eq ${#patches[@]} ]]; then
+if [[ "$all_applied" == true ]]; then
     for patch in "${patches[@]}"; do
         printf 'already applied: %s\n' "$(basename -- "$patch")"
     done
     exit 0
 fi
+
+if ! git -C "$adb_repo" diff --quiet HEAD -- "${touched_paths[@]}"; then
+    fail 'patch series is partially applied or touched ADB files have local changes; no files changed'
+fi
+for path in "${touched_paths[@]}"; do
+    if [[ -e "$adb_repo/$path" ]] &&
+       ! git -C "$adb_repo" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+        fail "untracked ADB file conflicts with patch series: $path"
+    fi
+done
+
+temporary_index=$(mktemp)
+GIT_INDEX_FILE="$temporary_index" git -C "$adb_repo" read-tree HEAD
+for patch in "${patches[@]}"; do
+    if ! GIT_INDEX_FILE="$temporary_index" git -C "$adb_repo" apply --cached "$patch"; then
+        fail "patch series does not apply sequentially; no files changed: $(basename -- "$patch")"
+    fi
+done
 
 for patch in "${patches[@]}"; do
     git -C "$adb_repo" apply "$patch"

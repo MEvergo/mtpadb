@@ -1,0 +1,10 @@
+on post-fs-data
+    mkdir /data/misc/adb/mtpadb 0700 root root
+    mkdir /data/misc/adb/mtpadb/wireless 0700 root root
+    restorecon_recursive /data/misc/adb/mtpadb
+
+service mtpadbd /system/bin/mtpadbd
+    class main
+    user root
+    group root
+    socket mtpadbd-control stream 0600 root root
