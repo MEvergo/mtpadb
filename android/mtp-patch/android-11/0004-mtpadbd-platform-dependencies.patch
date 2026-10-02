@@ -1,12 +1,18 @@
 diff --git a/adb/Android.bp b/adb/Android.bp
 --- a/adb/Android.bp
 +++ b/adb/Android.bp
-@@ -536,1 +536,4 @@
+@@ -532,7 +532,10 @@ cc_library {
+ cc_library {
+     name: "libadbd",
+     defaults: ["adbd_defaults", "host_adbd_supported"],
+     recovery_available: true,
 -    apex_available: ["com.android.adbd"],
 +    apex_available: [
 +        "//apex_available:platform",
 +        "com.android.adbd",
 +    ],
+ 
+     // avoid getting duplicate symbol of android::build::getbuildnumber().
 diff --git a/adb/crypto/Android.bp b/adb/crypto/Android.bp
 --- a/adb/crypto/Android.bp
 +++ b/adb/crypto/Android.bp
