@@ -88,7 +88,8 @@ jobs:
             "$clang_repo"
           git -C "$clang_repo" sparse-checkout init --cone
           git -C "$clang_repo" sparse-checkout set \
-            clang-r383902b1 clang-stable llvm-binutils-stable profiles
+            clang-r383902b1 clang-stable llvm-binutils-stable profiles \
+            soong
           git -C "$clang_repo" fetch --depth=1 origin "refs/tags/$AOSP_TAG"
           git -C "$clang_repo" checkout --detach FETCH_HEAD
 
