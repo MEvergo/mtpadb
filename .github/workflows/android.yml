@@ -76,7 +76,8 @@ jobs:
           mkdir -p .repo/local_manifests
           cp "$GITHUB_WORKSPACE/android/ci/aosp11-local-manifest.xml" \
             .repo/local_manifests/mtpadb.xml
-          repo sync --jobs=2 --no-clone-bundle --fail-fast
+          mapfile -t aosp_projects < "$GITHUB_WORKSPACE/android/ci/aosp11-projects.txt"
+          repo sync --jobs=2 --no-clone-bundle --fail-fast "${aosp_projects[@]}"
 
       - name: Fetch only the Android 11 Clang toolchain
         run: |
