@@ -29,6 +29,8 @@ prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8
 prebuilts/go/linux-x86
 prebuilts/jdk/jdk11
 prebuilts/sdk
+prebuilts/vndk/v28
+prebuilts/vndk/v29
 system/core
 system/libhidl
 system/sepolicy
