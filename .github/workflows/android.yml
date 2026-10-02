@@ -101,6 +101,9 @@ jobs:
           "$GITHUB_WORKSPACE/android/deploy/prepare-aosp.sh" android-11
           cd "$ANDROID_BUILD_TOP"
           source build/envsetup.sh
+
+          # The partial manifest omits unrelated tests and HAL modules.
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
           lunch aosp_arm64-eng
           m -j2 mtpadbd mtprpcd mtpadbctl
 
