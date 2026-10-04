@@ -101,10 +101,14 @@ jobs:
           "$GITHUB_WORKSPACE/android/deploy/prepare-aosp.sh" android-11
           cd "$ANDROID_BUILD_TOP"
           source build/envsetup.sh
+          cp "$GITHUB_WORKSPACE/android/ci/mtpadb_arm64.mk" \
+            "$ANDROID_BUILD_TOP/device/generic/arm64/mtpadb_arm64.mk"
+          printf '\nPRODUCT_MAKEFILES += $(LOCAL_DIR)/mtpadb_arm64.mk\n' \
+            >> "$ANDROID_BUILD_TOP/device/generic/arm64/AndroidProducts.mk"
 
           # The partial manifest omits unrelated tests and HAL modules.
           export SOONG_ALLOW_MISSING_DEPENDENCIES=true
-          lunch aosp_arm64-eng
+          lunch mtpadb_arm64-eng
           m -j2 mtpadbd mtprpcd mtpadbctl
 
           mkdir -p "$RUNNER_TEMP/dist"
