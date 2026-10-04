@@ -1,5 +1,6 @@
 art
 bionic
+bootable/recovery
 build/blueprint
 build/make
 build/soong
