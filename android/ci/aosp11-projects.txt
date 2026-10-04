@@ -38,3 +38,4 @@ system/libhidl
 system/sepolicy
 system/tools/aidl
 system/tools/hidl
+tools/metalava
